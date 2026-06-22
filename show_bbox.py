@@ -6,7 +6,7 @@ import numpy as np
 def main():
     image = Image.open('../Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam1_10_12682.jpg')
     img_copy = np.array(image.convert('RGB')).copy()
-    with open('../Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam1_10_12682.txt', 'r') as file:
+    with open('../Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam1_10_12682.txt', 'r') as file
         for line in file:
             cx, cy, w, h = map(float, line.split()[1:])
             x1 = 640 * (cx + 0.5 * w)
