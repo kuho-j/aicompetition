@@ -55,7 +55,7 @@ def decode_predictions(
         centers = torch.stack([xs / W, ys / H], dim=1)
         cls = cls_map.flatten()[topk_idx]
 
-        result.append({
+        results.append({
             'scores' : topk_val.cpu(),
             'classes' : cls.cpu(),
             'centers' : centers.cpu(),

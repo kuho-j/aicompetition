@@ -92,5 +92,3 @@ class CrossViewAttentionFusion(nn.Module):
             fused = F.interpolate(fused, size = (H, W), mode='bilinear', align_corners = False)
 
         return self.out_conv(fused)
-
-

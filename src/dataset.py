@@ -1,9 +1,9 @@
-from src.render_gt_heatmap import render_gaussian_heatmap
 import os
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import numpy as np
+from src.render_gt_heatmap import render_gaussian_heatmap
 
 class MultiViewDataset(Dataset):
     '''
@@ -52,7 +52,6 @@ def collate_fn(batch):
     return imgs, hms
 
 def format_data(filename_info):
-    sample = {}
 
     imgfile_lst = filename_info[0]
     label_file = filename_info[2]

@@ -1,11 +1,20 @@
 '''
-YOLOv8 Backbone
+This module is for YOLOv8 Backbone
+This module includes ...
+ConvBNSiLU
+Bottleneck
+SPPF
+C2f
+YOLOv8Backbone
 '''
 import torch
 import torch.nn as nn
 
 class ConvBNSiLU(nn.Module):
-    """Conv ->  BatchNorm ->  SiLU (fundamental unit)"""
+    """
+    Conv ->  BatchNorm ->  SiLU
+    (fundamental unit of backbone)
+    """
 
     def __init__(self, c_in: int, c_out: int, k: int = 3, s: int = 1, p: int = None):
 
@@ -20,7 +29,7 @@ class ConvBNSiLU(nn.Module):
               )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-      return self.block(x)
+        return self.block(x)
 
 
 class Bottleneck(nn.Module):
