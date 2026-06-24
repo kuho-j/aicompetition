@@ -39,8 +39,7 @@ def train_one_epoch(model, loader, optimizer, device):
         gt_heatmap = gt_heatmap.to(device)
 
         # forward
-        outputs = model(images)
-        pred_heatmap = outputs['heatmap']
+        pred_heatmap = model(images) 
 
         # loss
         loss = gaussian_focal_loss(pred_heatmap, gt_heatmap)
