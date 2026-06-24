@@ -65,7 +65,7 @@ def format_data(filename_info):
 
     for imgfile in imgfile_lst:
         if not os.path.exists(imgfile):
-            return img_list
+            continue
 
         img = Image.open(imgfile).convert('RGB')
 
