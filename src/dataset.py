@@ -21,6 +21,15 @@ class MultiViewDataset(Dataset):
     '''
         
     def __init__(self, data_list : list[dict[str, torch.Tensor]], num_classes : int, output_size : tuple[int, int]):
+        if len(data_list) == 0:
+            raise ValueError('data_list is empty')
+
+        for idx, sample in enumerate(data_list):
+            if sample is None:
+                raise ValueError(f'data_list[{idx}] is None')
+            if 'images' not in sample:
+                raise ValueError(f"data_list[{idx}] does not contain 'images'")
+
         self.data_list = data_list
         self.num_classes = num_classes
         self.output_h, self.output_w = output_size
@@ -49,12 +58,16 @@ class MultiViewDataset(Dataset):
         }
 
 def collate_fn(batch):
+    image_shapes = [tuple(b['images'].shape) for b in batch]
+    if len(set(image_shapes)) != 1:
+        raise ValueError(f'all image tensors must have the same shape, got {image_shapes}')
+
     imgs = torch.stack([b['images'] for b in batch])
     hms = torch.stack([b['heatmap'] for b in batch])
 
     return imgs, hms
 
-def format_data(filename_info):
+def format_data(filename_info, expected_num_views=5):
 
     imgfile_lst = filename_info[0]
     label_file = filename_info[2]
@@ -65,7 +78,7 @@ def format_data(filename_info):
 
     for imgfile in imgfile_lst:
         if not os.path.exists(imgfile):
-            continue
+            return None
 
         img = Image.open(imgfile).convert('RGB')
 
@@ -76,10 +89,13 @@ def format_data(filename_info):
 
         img_list.append(torch.from_numpy(img))
 
+    if len(img_list) != expected_num_views:
+        return None
+
     img_list = torch.stack(img_list)
      
     if not os.path.exists(label_file):
-        raise FileNotFoundError(f'label not found: {label_file}')
+        return None
 
     with open(label_file, 'r') as f:
         for line in f.readlines():

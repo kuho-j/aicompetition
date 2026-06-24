@@ -11,10 +11,17 @@ from src.train import train
 
 def make_data_list():
     data_list = []
+    skipped = 0
     with open('data/filename.txt', 'r') as file:
         for line in file:
             filename_info = make_filename(line)
-            data_list.append(format_data(filename_info))
+            sample = format_data(filename_info)
+            if sample is None:
+                skipped += 1
+                continue
+            data_list.append(sample)
+
+    print(f'loaded samples: {len(data_list)}, skipped samples: {skipped}')
     
     return data_list
 
