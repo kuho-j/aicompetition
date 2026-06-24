@@ -53,21 +53,23 @@ class MultiViewDetector(nn.Module):
         images : [B, N_views, C, H, W]
         '''
         B, N, C, H, W = images.shape
-        
         assert N == self.num_views, f'Expected {self.num_views} views, got {N}'
+        
+        # 병렬 처리를 위해 batch에 view를 넣기
+        x = images.reshape(B * N, C, H, W)
 
-        # extrack feature in each views
-        per_view_feats : list[list[torch.Tensor]] = []
-        for v in range(N):
-            feats = self.backbone(images[:, v]) # [P3, P4, P5]
-            per_view_feats.append(feats)
+        feats = self.backbone(x)
+
+        per_scale_feats = []
+        for feat in feats:
+            _, C_s, H_s, W_s = feat.shape
+            feat = feat.view(B, N, C_s, H_s, W_s)
+            per_scale_feats.append(feat)
             
         # cross-view fusion
-        num_scales = len(per_view_feats[0])
         fused_feats : list[torch.Tensor] = []
-        for s in range(num_scales):
-            scale_feats  = [per_view_feats[v][s] for v in range(N)]
-            fused = self.view_fusion[s](scale_feats)
+        for s, scale_feat in enumerate(per_scale_feats):
+            fused = self.view_fusion[s](scale_feat)
             fused_feats.append(fused)
         
         # FPN

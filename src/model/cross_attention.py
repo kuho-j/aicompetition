@@ -60,35 +60,47 @@ class CrossViewAttentionFusion(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=1)
         self.out_conv = ConvBNSiLU(embed_dim, embed_dim, 1, 1, 0)
 
-    def forward(self, view_feats : list[torch.Tensor]) -> torch.Tensor:
+    def forward(self, view_feats : torch.Tensor) -> torch.Tensor:
         '''
-        view_feats : list of [B, C, H, W], len == num_views
+        view_feats : [B, N, C, H, W]
         returns    : [B, C, H, W] fused feature
         '''
 
-        B, C, H, W = view_feats[0].shape
+        B, N, C, H, W = view_feats.shape
 
-        tokens_list = []
-        for v_idx, feat in enumerate(view_feats):
-            feat = self.pos_enc(feat, v_idx)
-            feat_ds = self.pool(feat)
-            h_, w_ = feat_ds.shape[2:]
-            tokens = feat_ds.flatten(2).permute(0, 2, 1)
-            tokens_list.append(tokens)
+        assert N == self.num_views
+        assert C == self.embed_dim
+        
+        x = view_feats
 
-        all_tokens = torch.cat(tokens_list, dim=1)
+        # view positional embedding
+        view_emb = self.pos_enc.embed.view(1, N, C, 1, 1)
+        x = x + view_emb
 
-        all_tokens = self.transformer(all_tokens)
-
-        h_ = H // self.ds
-        w_ = W // self.ds
-
-        all_tokens = all_tokens.view(B, self.num_views, h_ * w_, C)
-        fused = all_tokens.mean(dim=1)
-
-        fused = fused.permute(0, 2, 1).view(B, C, h_, w_)
-
+        # optional spatial downsample
         if self.ds > 1:
-            fused = F.interpolate(fused, size = (H, W), mode='bilinear', align_corners = False)
+            x = x.reshape(B * N, C, H, W)
+            x = self.pool(x)
+            _, _, h_, w_ = x.shape
+            x = x.view(B, N, C, h_, w_)
+        else:
+            h_, w_ = H, W
+        
+        # attention over views at each spatial location
+        x = x.permute(0, 3, 4, 1, 2).reshape(B * h_ * w_, N, C)
+        x = self.transformer(x)
 
+        # fused views
+        x = x.mean(dim=1)
+        fused = x.view(B, h_, w_, C).permute(0, 3, 1, 2).contiguous()
+
+        
+        if self.ds > 1:
+            fused = F.interpolate(
+                fused,
+                size= (H, W),
+                mode= 'bilinear',
+                align_corners=False,
+            )
+        
         return self.out_conv(fused)
