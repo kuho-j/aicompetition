@@ -6,7 +6,7 @@ from src.model.multiview_detection import MultiViewDetector
 from src.loss import MultiViewDetectorLoss
 from src.render_gt_heatmap import render_gaussian_heatmap
 from src.predict import decode_predictions
-from src.dataset import MultiViewDataset, format_data
+from src.dataset import MultiViewDataset, format_data, collate_fn
 from src.train import train
 
 def make_data_list():
@@ -96,7 +96,7 @@ def main():
             spatial_ds = 2,
             ).to(device)
 
-    dataset = MultiViewDataset(data_list, 60, (640, 480))
+    dataset = MultiViewDataset(data_list, 60, (60, 80))
     
     loader = DataLoader(
             dataset,

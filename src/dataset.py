@@ -15,9 +15,9 @@ class MultiViewDataset(Dataset):
     num_classes : int
     output_size : tuple[int, int]
 
-    output: list
-        [0] : 'images' [N_views = 5, C, H, W]
-        [1] : 'heatmap'
+    output: dict
+        'images' : [N_views = 5, C, H, W]
+        'heatmap'
     '''
         
     def __init__(self, data_list : list[dict[str, torch.Tensor]], num_classes : int, output_size : tuple[int, int]):
@@ -43,7 +43,10 @@ class MultiViewDataset(Dataset):
                 self.output_w,
                 sigma=1.5,
                 )
-        return [images, heatmap]
+        return {
+            'images' : images,
+            'heatmap' : heatmap
+        }
 
 def collate_fn(batch):
     imgs = torch.stack([b['images'] for b in batch])
@@ -75,13 +78,17 @@ def format_data(filename_info):
 
     img_list = torch.stack(img_list)
      
+    if not os.path.exists(label_file):
+        raise FileNotFoundError(f'label not found: {label_file}')
+
     with open(label_file, 'r') as f:
         for line in f.readlines():
             parts = line.strip().split()
-            if len(parts) == 3:
-                cls = int(parts[0])
-                cx, cy = map(float, parts[1:])
+            if len(parts) != 3:
+                continue
 
+            cls = int(parts[0])
+            cx, cy = map(float, parts[1:])
             classes.append(cls)
             centers.append([cx, cy])
 

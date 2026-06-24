@@ -1,6 +1,6 @@
 import torch
 import os
-from src.loss import *
+from src.loss import gaussian_focal_loss
 
 def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints'):
     os.makedirs(save_dir, exist_ok=True)
@@ -31,6 +31,9 @@ def train_one_epoch(model, loader, optimizer, device):
     model.train()
     total_loss = 0
 
+    if len(loader) == 0:
+        raise ValueError('train loader is empty')
+
     for images, gt_heatmap in loader:
         images = images.to(device)
         gt_heatmap = gt_heatmap.to(device)
@@ -45,6 +48,7 @@ def train_one_epoch(model, loader, optimizer, device):
         # backward
         optimizer.zero_grad()
         loss.backward()
+        optimizer.step()
 
         total_loss += loss.item()
     
@@ -64,6 +68,6 @@ def train(model, train_loader, device, resume_path = None, epochs=50, lr=1e-4):
         loss = train_one_epoch(model, train_loader, optimizer, device)
         print(f'[Epoch {epoch+1}] loss : {loss:.4f}')
         
-        if not (epoch % 3):
+        if (epoch + 1) % 3 == 0:
             save_checkpoint(model, optimizer, epoch)
 
