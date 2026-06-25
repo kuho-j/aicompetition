@@ -1,11 +1,9 @@
 import argparse
 import torch
-from torch.utils.data import DataLoader
 from data.make_filename import make_filename
 from src.model.multiview_detection import MultiViewDetector
-from src.dataset import MultiViewDataset, format_data, collate_fn
-from src.test import MultiViewEvalDataset, collate_eval_fn
-from src.train import train
+from src.dataset import format_data
+from src.train import train_k_fold
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train MultiViewDetector.')
@@ -19,6 +17,18 @@ def parse_args():
             '--weights',
             default=None,
             help='Path to a checkpoint to resume from.',
+            )
+    parser.add_argument(
+            '--k-folds',
+            type=int,
+            default=5,
+            help='Number of folds for k-fold validation.',
+            )
+    parser.add_argument(
+            '--fold-interval',
+            type=int,
+            default=5,
+            help='Number of epochs to train before checkpointing/testing and moving to the next fold.',
             )
     return parser.parse_args()
 
@@ -40,7 +50,7 @@ def make_data_list():
 
 
 
-def main(epochs = 50, weights = None):
+def main(epochs=50, weights=None, k_folds=5, fold_interval=5):
 
     data_list = make_data_list()
 
@@ -56,28 +66,23 @@ def main(epochs = 50, weights = None):
             spatial_ds = 2,
             ).to(device)
 
-    dataset = MultiViewDataset(data_list, 60, (60, 80))
-    
-    loader = DataLoader(
-            dataset,
-            batch_size = 32,
-            shuffle=True,
-            collate_fn = collate_fn,
+    train_k_fold(
+            model,
+            data_list,
+            device,
+            resume_path=weights,
+            epochs=epochs,
+            n_splits=k_folds,
+            fold_interval=fold_interval,
             )
-
-    test_dataset = MultiViewEvalDataset(data_list)
-
-    test_loader = DataLoader(
-            test_dataset,
-            batch_size = 32,
-            shuffle=False,
-            collate_fn = collate_eval_fn,
-            )
-    
-    train(model, loader, device, weights, epochs, test_loader=test_loader)
 
 
 
 if __name__ == "__main__":
     args = parse_args()
-    main(epochs=args.epochs, weights=args.weights)
+    main(
+            epochs=args.epochs,
+            weights=args.weights,
+            k_folds=args.k_folds,
+            fold_interval=args.fold_interval,
+            )
