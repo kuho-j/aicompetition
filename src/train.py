@@ -1,6 +1,7 @@
 import torch
 import os
 from src.loss import gaussian_focal_loss
+from src.test import test
 
 def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints'):
     os.makedirs(save_dir, exist_ok=True)
@@ -53,20 +54,49 @@ def train_one_epoch(model, loader, optimizer, device):
     
     return total_loss / len(loader)
 
-def train(model, train_loader, device, resume_path = None, epochs=50, lr=1e-4):
+def train(
+        model,
+        train_loader,
+        device,
+        resume_path = None,
+        epochs=50,
+        lr=1e-4,
+        test_loader=None,
+        test_interval=5,
+        topk=100,
+        score_threshold=0.3,
+        center_threshold=0.05,
+        ):
     model.to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    start_epoch = 0
+    start_epoch = 1
 
     if resume_path is not None:
         start_epoch = load_checkpoint(model, optimizer, resume_path, device)
 
-    for epoch in range(start_epoch, epochs):
+    for epoch in range(start_epoch, start_epoch + epochs):
         loss = train_one_epoch(model, train_loader, optimizer, device)
-        print(f'[Epoch {epoch+1}] loss : {loss:.4f}')
+        print(f'[Epoch {epoch}] loss : {loss:.4f}')
         
-        if (epoch + 1) % 3 == 0:
+        if epoch % test_interval == 0:
             save_checkpoint(model, optimizer, epoch)
+
+        if test_loader is not None and epoch % test_interval == 0:
+            precision, recall, fps = test(
+                    model=model,
+                    loader=test_loader,
+                    device=device,
+                    topk=topk,
+                    score_threshold=score_threshold,
+                    center_threshold=center_threshold,
+                    print_result=False,
+                    )
+            print(
+                    f'[Epoch {epoch}] '
+                    f'Precision: {precision:.4f}, '
+                    f'Recall: {recall:.4f}, '
+                    f'FPS: {fps:.2f}'
+                    )
 
