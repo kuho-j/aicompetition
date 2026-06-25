@@ -15,12 +15,23 @@ def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints'):
         }, ckpt_path)
 
 def load_checkpoint(model, optimizer, ckpt_path, device):
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(f'checkpoint not found: {ckpt_path}')
+
     checkpoint = torch.load(ckpt_path, map_location=device)
 
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
 
-    start_epoch = checkpoint['epoch'] + 1
+        if 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        else:
+            print(f'optimizer state not found in checkpoint: {ckpt_path}')
+
+        start_epoch = checkpoint.get('epoch', 0) + 1
+    else:
+        model.load_state_dict(checkpoint)
+        start_epoch = 1
 
     print(f'loaded checkpoint: {ckpt_path} (resume from epoch {start_epoch})')
 
@@ -83,7 +94,7 @@ def train(
         if epoch % test_interval == 0:
             save_checkpoint(model, optimizer, epoch)
 
-        if test_loader is not None and epoch % test_interval == 0:
+        if epoch % test_interval == 0 and test_loader is not None:
             precision, recall, fps = test(
                     model=model,
                     loader=test_loader,
@@ -94,9 +105,9 @@ def train(
                     print_result=False,
                     )
             print(
-                    f'[Epoch {epoch}] '
-                    f'Precision: {precision:.4f}, '
-                    f'Recall: {recall:.4f}, '
+                    f'[Epoch {epoch}]',
+                    f'Precision: {precision:.4f},',
+                    f'Recall: {recall:.4f},',
                     f'FPS: {fps:.2f}'
                     )
 

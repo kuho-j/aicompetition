@@ -42,6 +42,7 @@ def render_gaussian_heatmap(
 
         # element-wise max
         heatmap[cls_idx.long()] = torch.maximum(heatmap[cls_idx.long()], gaussian)
+        heatmap[cls_idx.long(), iy, ix] = 1.0
 
         center_mask[0, iy, ix] = 1.0
 

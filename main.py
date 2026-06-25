@@ -1,3 +1,4 @@
+import argparse
 import torch
 from torch.utils.data import DataLoader
 from data.make_filename import make_filename
@@ -5,6 +6,21 @@ from src.model.multiview_detection import MultiViewDetector
 from src.dataset import MultiViewDataset, format_data, collate_fn
 from src.test import MultiViewEvalDataset, collate_eval_fn
 from src.train import train
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train MultiViewDetector.')
+    parser.add_argument(
+            '--epochs',
+            type=int,
+            default=50,
+            help='Number of epochs to train. When --weights is used, this is the number of additional epochs.',
+            )
+    parser.add_argument(
+            '--weights',
+            default=None,
+            help='Path to a checkpoint to resume from.',
+            )
+    return parser.parse_args()
 
 def make_data_list():
     data_list = []
@@ -63,4 +79,5 @@ def main(epochs = 50, weights = None):
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(epochs=args.epochs, weights=args.weights)
