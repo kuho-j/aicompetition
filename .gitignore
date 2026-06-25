@@ -11,3 +11,6 @@ wheels/
 
 # 2d labeled-data
 data/2dlabel_dataset
+
+# weight file
+*.pt
