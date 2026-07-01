@@ -1,9 +1,9 @@
 import os
+import pickle
 import numpy as np
 import cv2
 from sklearn.cluster import DBSCAN
 from make_filename import make_filename
-import pickle
 
 class Cam:
     def __init__(self, H):
