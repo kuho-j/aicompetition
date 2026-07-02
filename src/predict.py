@@ -27,10 +27,9 @@ def decode_predictions(
 
     for b in range(B):
 
-        scores_map, cls_map = heatmap_nms[b].max(dim=0) # [H, W]
-
-        # top-k after flatten
-        flat_scores = scores_map.flatten()
+        # Keep class channels independent. Taking max over classes first drops
+        # all but one product when multiple classes peak at the same grid cell.
+        flat_scores = heatmap_nms[b].flatten()
         topk_val, topk_idx = flat_scores.topk(min(topk, flat_scores.numel()))
 
         # threshold filter
@@ -46,14 +45,14 @@ def decode_predictions(
                 })
             continue
 
-        # coordinates of grid
-        ys = (topk_idx // W).float()
-        xs = (topk_idx % W).float()
+        # coordinates of class/channel and grid
+        cls = topk_idx // (H * W)
+        spatial_idx = topk_idx % (H * W)
+        ys = (spatial_idx // W).float()
+        xs = (spatial_idx % W).float()
 
         # normalize
         centers = torch.stack([xs / W, ys / H], dim=1)
-        cls = cls_map.flatten()[topk_idx]
-
         results.append({
             'scores' : topk_val.cpu(),
             'classes' : cls.cpu(),
