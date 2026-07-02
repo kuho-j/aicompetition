@@ -18,11 +18,3 @@ def make_filename(in_str : str):
     result.append(path_1 + '_'.join(info) + '.txt')
 
     return result
-
-
-if __name__ == '__main__':
-    print(make_filename('1 2 3'))
-    
-
-
-
