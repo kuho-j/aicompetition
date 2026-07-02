@@ -1,6 +1,7 @@
 import os
 import csv
 import argparse
+import time
 import numpy as np
 import cv2
 import torch
@@ -39,27 +40,27 @@ def parse_arg():
     )
     parser.add_argument(
         '--cam1',
-        default=None,
+        default="/home/aicompetition43/Dataset/4.TestVideo_Sample/cam2/Sample_1.mp4",
         help='Path of a video file of center'
     )
     parser.add_argument(
         '--cam2',
-        default=None,
+        default="/home/aicompetition43/Dataset/4.TestVideo_Sample/cam4/Sample_1.mp4",
         help='Path of a video file of left behind'
     )
     parser.add_argument(
         '--cam3',
-        default=None,
+        default="/home/aicompetition43/Dataset/4.TestVideo_Sample/cam0/Sample_1.mp4",
         help='Path of a video file of left front'
     )
     parser.add_argument(
         '--cam4',
-        default=None,
+        default="/home/aicompetition43/Dataset/4.TestVideo_Sample/cam3/Sample_1.mp4",
         help='Path of a video file of right behind'
     )
     parser.add_argument(
         '--cam5',
-        default=None,
+        default="/home/aicompetition43/Dataset/4.TestVideo_Sample/cam1/Sample_1.mp4",
         help='Path of a video file of right front'
     )
 
@@ -137,19 +138,14 @@ def evaluate(
     if img.ndim != 5:
         raise ValueError(f'img must have shape [B, N_views, C, H, W], got {tuple(img.shape)}')
 
-    was_training = model.training
-    model.eval()
 
-    with torch.no_grad():
-        pred_heatmap = model(img.to(device))
-        decoded = decode_predictions(
-            pred_heatmap,
-            topk=topk,
-            score_threshold=score_threshold,
-        )
+    pred_heatmap = model(img.to(device))
+    decoded = decode_predictions(
+        pred_heatmap,
+        topk=topk,
+        score_threshold=score_threshold,
+    )
 
-    if was_training:
-        model.train()
 
     classes = decoded[0]['classes'].numpy()
     return np.bincount(classes, minlength=num_classes)[:num_classes]
@@ -172,7 +168,7 @@ def main(
     model.eval()
 
     # cam1 / cam2 / cam3 / cam4 / cam5
-    # 중앙 / 좌측뒤 / 좌측앞 / 우측뒤 / 우측앞
+    # ì¤ì / ì¢ì¸¡ë¤ / ì¢ì¸¡ì / ì°ì¸¡ë¤ / ì°ì¸¡ì
     video_paths = [cam1, cam2, cam3, cam4, cam5]
     caps = [cv2.VideoCapture(path) for path in video_paths]
 
@@ -187,6 +183,9 @@ def main(
     event_num = 0
     events = [['Product Name', 'Event Number', 'Purchase / Return'] + names + ['Total Inventory Value']]
 
+    print('all_ready. start the program')
+    start_time = time.time()
+
     while True:
         img_frames = []
         all_success = True
@@ -194,7 +193,7 @@ def main(
         for cap in caps:
             ret, frame = cap.read()
             
-            # 프레임이 끝나거나 읽기에 실패했을 때
+            # íë ìì´ ëëê±°ë ì½ê¸°ì ì¤í¨íì ë
             if not ret:
                 all_success = False
                 break
@@ -215,6 +214,7 @@ def main(
         if event_num == 0:
             # initial setting
             event_num = 1
+            print(current_item)
         else:
             changed_item = current_item - prev_item
             for class_idx, changed in enumerate(changed_item):
@@ -228,7 +228,12 @@ def main(
                 ] + list(current_item) + [sum(current_item * prices)]
 
                 events.append(event)
+                event_num += 1
+
         prev_item = current_item
+
+    execution_time = time.time() - start_time
+    print(f'execution time: {execution_time}')
 
     for cap in caps:
         cap.release()
