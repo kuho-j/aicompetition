@@ -168,7 +168,7 @@ def main(
     model.eval()
 
     # cam1 / cam2 / cam3 / cam4 / cam5
-    # ì¤ì / ì¢ì¸¡ë¤ / ì¢ì¸¡ì / ì°ì¸¡ë¤ / ì°ì¸¡ì
+    # 중앙 / 좌측뒤 / 좌측앞 / 우측뒤 / 우측앞
     video_paths = [cam1, cam2, cam3, cam4, cam5]
     caps = [cv2.VideoCapture(path) for path in video_paths]
 
@@ -193,7 +193,7 @@ def main(
         for cap in caps:
             ret, frame = cap.read()
             
-            # íë ìì´ ëëê±°ë ì½ê¸°ì ì¤í¨íì ë
+            # 프레임이 끝나거나 읽기에 실패했을 때
             if not ret:
                 all_success = False
                 break
