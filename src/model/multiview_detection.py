@@ -22,6 +22,9 @@ class MultiViewDetector(nn.Module):
             backbone_depth : float = 0.33,
             attn_heads : int = 4,
             spatial_ds : int = 2, # spatial compression before the attention
+            homography_path : str | None = 'data/homography_matrix_for_train_dataset.pkl',
+            use_homography_align : bool = True,
+            homography_source_to_target : bool = True,
             ):
         super().__init__()
         self.num_views = num_views
@@ -30,6 +33,20 @@ class MultiViewDetector(nn.Module):
         # backbone
         self.backbone = YOLOv8Backbone(img_channels, backbone_width, backbone_depth)
         bb_ch = self.backbone.out_channels # [C_p3, C_p4, C_p5]
+
+        # feature alignment before cross-view attention
+        if use_homography_align:
+            if homography_path is None:
+                homographies = torch.eye(3, dtype=torch.float32).repeat(num_views, 1, 1)
+            else:
+                homographies = load_homography_matrices(homography_path, num_views)
+
+            self.view_align = LearnableHomographyAlign(
+                homographies=homographies,
+                source_to_target=homography_source_to_target,
+                )
+        else:
+            self.view_align = None
 
         # cross-view attention
         self.view_fusion = nn.ModuleList([
@@ -69,6 +86,9 @@ class MultiViewDetector(nn.Module):
         # cross-view fusion
         fused_feats : list[torch.Tensor] = []
         for s, scale_feat in enumerate(per_scale_feats):
+            if self.view_align is not None:
+                scale_feat = self.view_align(scale_feat, image_size=(H, W))
+
             fused = self.view_fusion[s](scale_feat)
             fused_feats.append(fused)
         

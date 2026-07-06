@@ -12,6 +12,10 @@ from src.model.multiview_detection import MultiViewDetector
 from src.test import test
 from src.test import MultiViewEvalDataset, collate_eval_fn
 
+HOMOGRAPHY_FREEZE_EPOCHS = 50
+HOMOGRAPHY_LR_MULT = 0.1
+HOMOGRAPHY_REG_WEIGHT = 1e-6
+
 def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints', fold=None):
     os.makedirs(save_dir, exist_ok=True)
 
@@ -41,7 +45,11 @@ def load_checkpoint(model, optimizer, ckpt_path, device):
         model.load_state_dict(checkpoint['model_state_dict'])
 
         if 'optimizer_state_dict' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            try:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            except ValueError as exc:
+                print(f'optimizer state is incompatible with current parameter groups: {exc}')
+                print('continuing with a freshly initialized optimizer')
         else:
             print(f'optimizer state not found in checkpoint: {ckpt_path}')
 
@@ -54,9 +62,66 @@ def load_checkpoint(model, optimizer, ckpt_path, device):
 
     return start_epoch
 
+def iter_homography_params(model):
+    for name, param in model.named_parameters():
+        if 'homography_params' in name:
+            yield name, param
+
+def has_homography_params(model):
+    return any(True for _ in iter_homography_params(model))
+
+def set_homography_trainable(model, trainable):
+    for _, param in iter_homography_params(model):
+        param.requires_grad = trainable
+
+def make_optimizer(model, lr):
+    homography_params = []
+    base_params = []
+
+    for name, param in model.named_parameters():
+        if 'homography_params' in name:
+            homography_params.append(param)
+        else:
+            base_params.append(param)
+
+    param_groups = [{'params': base_params, 'lr': lr}]
+    if homography_params:
+        param_groups.append({
+            'params': homography_params,
+            'lr': lr * HOMOGRAPHY_LR_MULT,
+        })
+
+    return torch.optim.Adam(param_groups, lr=lr)
+
+def capture_homography_reference(model, device):
+    return {
+        name: param.detach().clone().to(device)
+        for name, param in iter_homography_params(model)
+    }
+
+def homography_regularization(model, reference):
+    if not reference:
+        return None
+
+    reg = None
+    for name, param in iter_homography_params(model):
+        if name not in reference:
+            continue
+
+        loss = (param - reference[name].to(param.device, param.dtype)).pow(2).mean()
+        reg = loss if reg is None else reg + loss
+
+    return reg
 
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(
+        model,
+        loader,
+        optimizer,
+        device,
+        homography_reference=None,
+        homography_reg_weight=0.0,
+        ):
     model.train()
     total_loss = 0
 
@@ -72,6 +137,9 @@ def train_one_epoch(model, loader, optimizer, device):
 
         # loss
         loss = gaussian_focal_loss(pred_heatmap, gt_heatmap)
+        h_reg = homography_regularization(model, homography_reference)
+        if h_reg is not None and homography_reg_weight > 0:
+            loss = loss + homography_reg_weight * h_reg
 
         # backward
         optimizer.zero_grad()
@@ -81,6 +149,11 @@ def train_one_epoch(model, loader, optimizer, device):
         total_loss += loss.item()
     
     return total_loss / len(loader)
+
+def configure_homography_phase(model, epoch):
+    trainable = epoch > HOMOGRAPHY_FREEZE_EPOCHS
+    set_homography_trainable(model, trainable)
+    return trainable
 
 def make_k_fold_loaders(
         data_list,
@@ -180,12 +253,16 @@ def train(
 
     model.to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-
     start_epoch = 1
+
+    configure_homography_phase(model, start_epoch)
+    optimizer = make_optimizer(model, lr)
+    homography_reference = capture_homography_reference(model, device)
 
     if resume_path is not None:
         start_epoch = load_checkpoint(model, optimizer, resume_path, device)
+        configure_homography_phase(model, start_epoch)
+        homography_reference = capture_homography_reference(model, device)
 
     train_loader, test_loader = make_train_loaders(
             data_list=data_list,
@@ -197,7 +274,21 @@ def train(
             )
 
     for epoch in range(start_epoch, start_epoch + epochs):
-        loss = train_one_epoch(model, train_loader, optimizer, device)
+        homography_trainable = configure_homography_phase(model, epoch)
+        if has_homography_params(model) and (
+                epoch == start_epoch or epoch == HOMOGRAPHY_FREEZE_EPOCHS + 1
+                ):
+            phase = 'trainable' if homography_trainable else 'frozen'
+            print(f'[Epoch {epoch}] homography alignment: {phase}')
+
+        loss = train_one_epoch(
+                model,
+                train_loader,
+                optimizer,
+                device,
+                homography_reference=homography_reference,
+                homography_reg_weight=HOMOGRAPHY_REG_WEIGHT if homography_trainable else 0.0,
+                )
         print(f'[Epoch {epoch}] loss : {loss:.4f}')
         
         if epoch % test_interval == 0:
@@ -241,12 +332,17 @@ def train_k_fold(
         raise ValueError('fold_interval must be at least 1')
 
     model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     start_epoch = 1
 
+    configure_homography_phase(model, start_epoch)
+    optimizer = make_optimizer(model, lr)
+    homography_reference = capture_homography_reference(model, device)
+
     if resume_path is not None:
         start_epoch = load_checkpoint(model, optimizer, resume_path, device)
+        configure_homography_phase(model, start_epoch)
+        homography_reference = capture_homography_reference(model, device)
 
     active_fold = None
     train_loader = None
@@ -269,7 +365,21 @@ def train_k_fold(
                     )
             print(f'[Epoch {epoch}] using fold {active_fold + 1}/{n_splits}')
 
-        loss = train_one_epoch(model, train_loader, optimizer, device)
+        homography_trainable = configure_homography_phase(model, epoch)
+        if has_homography_params(model) and (
+                epoch == start_epoch or epoch == HOMOGRAPHY_FREEZE_EPOCHS + 1
+                ):
+            phase = 'trainable' if homography_trainable else 'frozen'
+            print(f'[Epoch {epoch}] homography alignment: {phase}')
+
+        loss = train_one_epoch(
+                model,
+                train_loader,
+                optimizer,
+                device,
+                homography_reference=homography_reference,
+                homography_reg_weight=HOMOGRAPHY_REG_WEIGHT if homography_trainable else 0.0,
+                )
         print(f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}] loss : {loss:.4f}')
 
         if epoch % fold_interval == 0:
