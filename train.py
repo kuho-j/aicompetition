@@ -19,10 +19,14 @@ HOMOGRAPHY_REG_WEIGHT = 1e-6
 def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints', fold=None):
     os.makedirs(save_dir, exist_ok=True)
 
+    '''
     if fold is None:
         ckpt_path = os.path.join(save_dir, f'epoch_{epoch}.pt')
     else:
         ckpt_path = os.path.join(save_dir, f'fold_{fold}_epoch_{epoch}.pt')
+    '''
+    
+    ckpt_path = os.path.join(save_dir, f'feature1_epoch_{epoch}.pt')
 
     checkpoint = {
         'epoch' : epoch,

@@ -9,10 +9,10 @@ from make_filename import make_filename
 yeild homography matrices that convert train dataset view to given video view
 '''
 '''
-with open('data/homography_matrix_for_train_dataset.pkl', 'rb') as f:
+with open('homography_matrix_for_train_dataset.pkl', 'rb') as f:
     H_train_dict = pickle.load(f)
 
-with open('data/homography_matrix.pkl', 'rb') as f:
+with open('homography_matrix_for_video.pkl', 'rb') as f:
     H_video_dict = pickle.load(f)
 
 # H(train -> video) = H-1(train -> plane) * H(video -> plane)
@@ -35,7 +35,7 @@ H = {0 : H_cam1,
      3 : H_cam4,
      4 : H_cam5}
 
-with open('data/homography_matrix_train_to_video.pkl', 'wb') as f:
+with open('homography_matrix_train_to_video.pkl', 'wb') as f:
     pickle.dump(H, f)
 '''
 
@@ -53,31 +53,38 @@ img_path_list = [
     "C:/Users/007sk/Desktop/cam4.jpg",
     "C:/Users/007sk/Desktop/cam5.jpg",
 ]
+if __name__ == '__main__':
 
-with open(homography_path, 'rb') as f:
-    homography_dict = pickle.load(f)
+    homography_path = 'homography_matrix_train_to_video.pkl'
+    #homography_path = 'homography_matrix_for_train_dataset.pkl'
+    file_info = 'Middle 11 12084'
+    img_path_list = make_filename(file_info)[0]
 
-img_list = []
 
-for img_path in img_path_list:
-    img = cv2.imread(img_path)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img_list.append(img)
+    with open(homography_path, 'rb') as f:
+        homography_dict = pickle.load(f)
 
-row, col, ch = 480, 640, 3
+    img_list = []
 
-cvt_img_list = [cv2.warpPerspective(img_list[i], homography_dict[i], (col, row)) for i in range(0, 5)]
+    for img_path in img_path_list:
+        img = cv2.imread(img_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img_list.append(img)
 
-for i in range(1, 6):
-    plt.subplot(5, 2, 2*i-1)
-    plt.title(f'original cam{i}')
-    plt.imshow(img_list[i-1])
-    plt.axis('off')
+    row, col, ch = 480, 640, 3
 
-    plt.subplot(5, 2, 2*i)
-    plt.title(f'converted cam{i}')
-    plt.imshow(cvt_img_list[i-1])
-    plt.axis('off')
+    cvt_img_list = [cv2.warpPerspective(img_list[i], homography_dict[i], (col, row)) for i in range(0, 5)]
 
-plt.tight_layout()
-plt.show()
+    for i in range(1, 6):
+        plt.subplot(5, 2, 2*i-1)
+        plt.title(f'original cam{i}')
+        plt.imshow(img_list[i-1])
+        plt.axis('off')
+
+        plt.subplot(5, 2, 2*i)
+        plt.title(f'converted cam{i}')
+        plt.imshow(cvt_img_list[i-1])
+        plt.axis('off')
+
+    plt.tight_layout()
+    plt.show()

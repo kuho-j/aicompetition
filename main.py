@@ -214,7 +214,6 @@ def main(
         if event_num == 0:
             # initial setting
             event_num = 1
-            print(current_item)
         else:
             changed_item = current_item - prev_item
             for class_idx, changed in enumerate(changed_item):
@@ -231,6 +230,9 @@ def main(
                 event_num += 1
 
         prev_item = current_item
+        # test code
+        print(current_item)
+        input()
 
     execution_time = time.time() - start_time
     print(f'execution time: {execution_time}')
