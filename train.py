@@ -1,6 +1,8 @@
 import argparse
+import pickle
 import torch
 import os
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import KFold
 
@@ -15,6 +17,209 @@ from src.test import MultiViewEvalDataset, collate_eval_fn
 HOMOGRAPHY_FREEZE_EPOCHS = 50
 HOMOGRAPHY_LR_MULT = 0.1
 HOMOGRAPHY_REG_WEIGHT = 1e-6
+HOMOGRAPHY_AUG_PATH = 'data/homography_matrix_train_to_video.pkl'
+HOMOGRAPHY_AUG_PROB = 0.35
+HOMOGRAPHY_AUG_MAX_RETRIES = 8
+HOMOGRAPHY_AUG_ALPHA_MAX = 1.0
+HOMOGRAPHY_AUG_STRICT_ALPHA_MAX = 0.75
+HOMOGRAPHY_AUG_MIN_VALID_RATIO = 0.65
+HOMOGRAPHY_AUG_STRICT_MIN_VALID_RATIO = 0.78
+HOMOGRAPHY_AUG_STRICT_VIEWS = {1, 3}
+
+
+def load_homography_augmentation_matrices(path=HOMOGRAPHY_AUG_PATH, num_views=5):
+    with open(path, 'rb') as f:
+        homographies = pickle.load(f)
+
+    if isinstance(homographies, dict):
+        matrices = [homographies[i] for i in range(num_views)]
+    else:
+        matrices = list(homographies)
+
+    if len(matrices) != num_views:
+        raise ValueError(
+                f'Expected {num_views} homography matrices, got {len(matrices)}'
+                )
+
+    tensor = torch.as_tensor(matrices, dtype=torch.float32)
+    if tensor.shape != (num_views, 3, 3):
+        raise ValueError(
+                f'Expected homographies with shape ({num_views}, 3, 3), got {tuple(tensor.shape)}'
+                )
+
+    return tensor
+
+
+def _clamp_homogeneous_denominator(x, eps=1e-6):
+    sign = torch.where(x < 0, -torch.ones_like(x), torch.ones_like(x))
+    return torch.where(x.abs() < eps, sign * eps, x)
+
+
+def _solve_homography_from_points(src_points, dst_points):
+    x = src_points[:, 0]
+    y = src_points[:, 1]
+    u = dst_points[:, 0]
+    v = dst_points[:, 1]
+    ones = torch.ones_like(x)
+    zeros = torch.zeros_like(x)
+
+    rows_x = torch.stack(
+            [x, y, ones, zeros, zeros, zeros, -u * x, -u * y],
+            dim=1,
+            )
+    rows_y = torch.stack(
+            [zeros, zeros, zeros, x, y, ones, -v * x, -v * y],
+            dim=1,
+            )
+    lhs = torch.empty(8, 8, device=src_points.device, dtype=src_points.dtype)
+    lhs[0::2] = rows_x
+    lhs[1::2] = rows_y
+
+    rhs = torch.empty(8, device=src_points.device, dtype=src_points.dtype)
+    rhs[0::2] = u
+    rhs[1::2] = v
+
+    params = torch.linalg.solve(lhs, rhs)
+    one = torch.ones(1, device=src_points.device, dtype=src_points.dtype)
+    return torch.cat([params, one]).view(3, 3)
+
+
+def _interpolate_homography_by_corners(homography, alpha, image_h, image_w):
+    corners = torch.tensor(
+            [
+                [0.0, 0.0],
+                [image_w - 1.0, 0.0],
+                [image_w - 1.0, image_h - 1.0],
+                [0.0, image_h - 1.0],
+            ],
+            device=homography.device,
+            dtype=homography.dtype,
+            )
+    corners_h = torch.cat([corners, torch.ones_like(corners[:, :1])], dim=1)
+
+    dst_h = (homography @ corners_h.T).T
+    dst_z = _clamp_homogeneous_denominator(dst_h[:, 2:3])
+    dst = dst_h[:, :2] / dst_z
+    dst_alpha = corners + alpha * (dst - corners)
+
+    return _solve_homography_from_points(corners, dst_alpha)
+
+
+def _make_homography_sampling_grid(homography, image_h, image_w, device, dtype):
+    calc_dtype = torch.float32
+    homography = homography.to(device=device, dtype=calc_dtype)
+    inverse = torch.linalg.inv(homography)
+
+    xs = torch.linspace(0, image_w - 1, image_w, device=device, dtype=calc_dtype)
+    ys = torch.linspace(0, image_h - 1, image_h, device=device, dtype=calc_dtype)
+    grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')
+
+    ones = torch.ones_like(grid_x)
+    target_points = torch.stack([grid_x, grid_y, ones], dim=0).reshape(3, -1)
+    source_points = inverse @ target_points
+
+    z = _clamp_homogeneous_denominator(source_points[2])
+    src_x = source_points[0] / z
+    src_y = source_points[1] / z
+
+    norm_x = 2.0 * src_x / max(image_w - 1, 1) - 1.0
+    norm_y = 2.0 * src_y / max(image_h - 1, 1) - 1.0
+
+    return torch.stack([norm_x, norm_y], dim=-1).view(image_h, image_w, 2).to(dtype=dtype)
+
+
+def homogrphy_augmentation(
+        images,
+        homographies,
+        probability=HOMOGRAPHY_AUG_PROB,
+        max_retries=HOMOGRAPHY_AUG_MAX_RETRIES,
+        alpha_max=HOMOGRAPHY_AUG_ALPHA_MAX,
+        strict_alpha_max=HOMOGRAPHY_AUG_STRICT_ALPHA_MAX,
+        min_valid_ratio=HOMOGRAPHY_AUG_MIN_VALID_RATIO,
+        strict_min_valid_ratio=HOMOGRAPHY_AUG_STRICT_MIN_VALID_RATIO,
+        strict_views=HOMOGRAPHY_AUG_STRICT_VIEWS,
+        ):
+    '''
+    Randomly warp training views toward the video-view homographies.
+
+    images: [B, num_views, C, H, W]
+    homographies: [num_views, 3, 3], source(train image) -> target(video-like image)
+    '''
+
+    if homographies is None or probability <= 0:
+        return images
+
+    if images.ndim != 5:
+        raise ValueError(f'Expected images with shape [B, V, C, H, W], got {tuple(images.shape)}')
+
+    batch_size, num_views, _, image_h, image_w = images.shape
+    if homographies.shape[0] != num_views:
+        raise ValueError(
+                f'Expected {num_views} homography matrices, got {homographies.shape[0]}'
+                )
+
+    homographies = homographies.to(device=images.device, dtype=torch.float32)
+    augmented = images.clone()
+    mask = torch.ones(1, 1, image_h, image_w, device=images.device, dtype=images.dtype)
+
+    for batch_idx in range(batch_size):
+        for view_idx in range(num_views):
+            if torch.rand((), device=images.device).item() >= probability:
+                continue
+
+            is_strict_view = view_idx in strict_views
+            view_alpha_max = strict_alpha_max if is_strict_view else alpha_max
+            view_min_valid_ratio = strict_min_valid_ratio if is_strict_view else min_valid_ratio
+
+            selected_grid = None
+            for _ in range(max_retries):
+                alpha = torch.rand((), device=images.device).item() * view_alpha_max
+                try:
+                    interpolated_h = _interpolate_homography_by_corners(
+                            homographies[view_idx],
+                            alpha,
+                            image_h,
+                            image_w,
+                            )
+                    if not torch.isfinite(interpolated_h).all():
+                        continue
+
+                    grid = _make_homography_sampling_grid(
+                            interpolated_h,
+                            image_h,
+                            image_w,
+                            images.device,
+                            images.dtype,
+                            )
+                    if not torch.isfinite(grid).all():
+                        continue
+                except RuntimeError:
+                    continue
+
+                valid = F.grid_sample(
+                        mask,
+                        grid.unsqueeze(0),
+                        mode='nearest',
+                        padding_mode='zeros',
+                        align_corners=True,
+                        )
+                if valid.mean().item() >= view_min_valid_ratio:
+                    selected_grid = grid
+                    break
+
+            if selected_grid is None:
+                continue
+
+            warped = F.grid_sample(
+                    images[batch_idx, view_idx].unsqueeze(0),
+                    selected_grid.unsqueeze(0),
+                    mode='bilinear',
+                    padding_mode='reflection',
+                    align_corners=True,
+                    )
+            augmented[batch_idx, view_idx] = warped.squeeze(0)
+
+    return augmented
 
 def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints', fold=None):
     os.makedirs(save_dir, exist_ok=True)
@@ -125,6 +330,7 @@ def train_one_epoch(
         device,
         homography_reference=None,
         homography_reg_weight=0.0,
+        homography_augmentation_matrices=None,
         ):
     model.train()
     total_loss = 0
@@ -135,6 +341,10 @@ def train_one_epoch(
     for images, gt_heatmap in loader:
         images = images.to(device)
         gt_heatmap = gt_heatmap.to(device)
+        images = homogrphy_augmentation(
+                images,
+                homography_augmentation_matrices,
+                )
 
         # forward
         pred_heatmap = model(images) 
@@ -258,6 +468,7 @@ def train(
     model.to(device)
 
     start_epoch = 1
+    homography_augmentation_matrices = load_homography_augmentation_matrices()
 
     configure_homography_phase(model, start_epoch)
     optimizer = make_optimizer(model, lr)
@@ -292,6 +503,7 @@ def train(
                 device,
                 homography_reference=homography_reference,
                 homography_reg_weight=HOMOGRAPHY_REG_WEIGHT if homography_trainable else 0.0,
+                homography_augmentation_matrices=homography_augmentation_matrices,
                 )
         print(f'[Epoch {epoch}] loss : {loss:.4f}')
         
@@ -338,6 +550,7 @@ def train_k_fold(
     model.to(device)
 
     start_epoch = 1
+    homography_augmentation_matrices = load_homography_augmentation_matrices()
 
     configure_homography_phase(model, start_epoch)
     optimizer = make_optimizer(model, lr)
@@ -383,6 +596,7 @@ def train_k_fold(
                 device,
                 homography_reference=homography_reference,
                 homography_reg_weight=HOMOGRAPHY_REG_WEIGHT if homography_trainable else 0.0,
+                homography_augmentation_matrices=homography_augmentation_matrices,
                 )
         print(f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}] loss : {loss:.4f}')
 
