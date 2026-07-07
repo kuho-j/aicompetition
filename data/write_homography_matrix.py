@@ -52,10 +52,11 @@ if __name__ == "__main__":
     integrator = MultiViewPlaneIntegrator()
     
     # points from the each camera view
-    ''' this is for the background images
+    ''' this is for the background images'''
+    '''
     image_points = {0 : [[237, 156],
                          [262, 200],
-                         [131, 191],
+                         [313, 192],
                          [286, 152]],
                     1 : [[304, 167],
                          [284, 210],
@@ -76,6 +77,7 @@ if __name__ == "__main__":
     '''
 
     ''' this is for the test dataset background images '''
+
     image_points = {0 : [[310, 355],
                          [362, 355],
                          [35, 204],
@@ -97,14 +99,9 @@ if __name__ == "__main__":
                          [309, 319],
                          [189, 334]],
                     }
-
-
-
-
-                         
     
     # coordinates of virtual plane
-    virtual_plane_points = [
+    virtual_plane_point = [
         [284, 160],
         [284, 240],
         [355, 240],

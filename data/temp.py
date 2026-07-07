@@ -3,7 +3,7 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
-from data.make_filename import make_filename
+from make_filename import make_filename
 
 '''
 yeild homography matrices that convert train dataset view to given video view
@@ -43,10 +43,16 @@ with open('data/homography_matrix_train_to_video.pkl', 'wb') as f:
 show an image with converted view by given homogrphy matrices
 '''
 
-homography_path = 'homography_matrix_train_to_video.pkl'
-file_info = ''
-img_path_list = make_filename(file_info)[0]
-
+homography_path = 'data/homography_matrix_for_train_dataset.pkl'
+#file_info = ''
+#img_path_list = make_filename(file_info)[0]
+img_path_list = [
+    "C:/Users/007sk/Desktop/cam1.jpg",
+    "C:/Users/007sk/Desktop/cam2.jpg",
+    "C:/Users/007sk/Desktop/cam3.jpg",
+    "C:/Users/007sk/Desktop/cam4.jpg",
+    "C:/Users/007sk/Desktop/cam5.jpg",
+]
 
 with open(homography_path, 'rb') as f:
     homography_dict = pickle.load(f)
