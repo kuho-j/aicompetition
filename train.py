@@ -20,8 +20,8 @@ HOMOGRAPHY_REG_WEIGHT = 1e-6
 HOMOGRAPHY_AUG_PATH = 'data/homography_matrix_train_to_video.pkl'
 HOMOGRAPHY_AUG_PROB = 0.35
 HOMOGRAPHY_AUG_MAX_RETRIES = 8
-HOMOGRAPHY_AUG_ALPHA_MAX = 1.0
-HOMOGRAPHY_AUG_STRICT_ALPHA_MAX = 0.75
+HOMOGRAPHY_AUG_ALPHA_RANGE = (0.0, 1.0)
+HOMOGRAPHY_AUG_STRICT_ALPHA_RANGE = (0.0, 0.75)
 HOMOGRAPHY_AUG_MIN_VALID_RATIO = 0.65
 HOMOGRAPHY_AUG_STRICT_MIN_VALID_RATIO = 0.78
 HOMOGRAPHY_AUG_STRICT_VIEWS = {1, 3}
@@ -133,8 +133,8 @@ def homogrphy_augmentation(
         homographies,
         probability=HOMOGRAPHY_AUG_PROB,
         max_retries=HOMOGRAPHY_AUG_MAX_RETRIES,
-        alpha_max=HOMOGRAPHY_AUG_ALPHA_MAX,
-        strict_alpha_max=HOMOGRAPHY_AUG_STRICT_ALPHA_MAX,
+        alpha_range=HOMOGRAPHY_AUG_ALPHA_RANGE,
+        strict_alpha_range=HOMOGRAPHY_AUG_STRICT_ALPHA_RANGE,
         min_valid_ratio=HOMOGRAPHY_AUG_MIN_VALID_RATIO,
         strict_min_valid_ratio=HOMOGRAPHY_AUG_STRICT_MIN_VALID_RATIO,
         strict_views=HOMOGRAPHY_AUG_STRICT_VIEWS,
@@ -144,10 +144,21 @@ def homogrphy_augmentation(
 
     images: [B, num_views, C, H, W]
     homographies: [num_views, 3, 3], source(train image) -> target(video-like image)
+    alpha_range: interpolation strength range. 0.0 keeps the original image,
+        1.0 applies the full target homography.
     '''
 
     if homographies is None or probability <= 0:
         return images
+
+    alpha_min, alpha_max = alpha_range
+    strict_alpha_min, strict_alpha_max = strict_alpha_range
+    if not (0.0 <= alpha_min <= alpha_max):
+        raise ValueError(f'Expected alpha_range as 0 <= min <= max, got {alpha_range}')
+    if not (0.0 <= strict_alpha_min <= strict_alpha_max):
+        raise ValueError(
+                f'Expected strict_alpha_range as 0 <= min <= max, got {strict_alpha_range}'
+                )
 
     if images.ndim != 5:
         raise ValueError(f'Expected images with shape [B, V, C, H, W], got {tuple(images.shape)}')
@@ -168,12 +179,17 @@ def homogrphy_augmentation(
                 continue
 
             is_strict_view = view_idx in strict_views
+            view_alpha_min = strict_alpha_min if is_strict_view else alpha_min
             view_alpha_max = strict_alpha_max if is_strict_view else alpha_max
             view_min_valid_ratio = strict_min_valid_ratio if is_strict_view else min_valid_ratio
 
             selected_grid = None
             for _ in range(max_retries):
-                alpha = torch.rand((), device=images.device).item() * view_alpha_max
+                alpha = (
+                        view_alpha_min
+                        + torch.rand((), device=images.device).item()
+                        * (view_alpha_max - view_alpha_min)
+                        )
                 try:
                     interpolated_h = _interpolate_homography_by_corners(
                             homographies[view_idx],
