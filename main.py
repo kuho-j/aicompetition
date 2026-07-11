@@ -5,8 +5,9 @@ import time
 import numpy as np
 import cv2
 import torch
+import torch.nn.functional as F
 
-from src.model.multiview_detection import MultiViewDetector
+from src.model.viewpoint_bev_detection import SingleViewBEVDetector
 from src.predict import decode_predictions
 
 
@@ -67,7 +68,7 @@ def parse_arg():
     return parser.parse_args()
 
 def load_model(
-    model : MultiViewDetector,
+    model : SingleViewBEVDetector,
     path : str,
     device : torch.device
     ) -> None:
@@ -91,7 +92,7 @@ def load_model(
 def format_data(img_list : list[torch.Tensor]) -> torch.Tensor:
     '''
     input : list of images, each [H, W, C] BGR or [C, H, W] RGB
-    output : model input [1, N_views, C, H, W]
+    output : model input [N_views, C, H, W]
     '''
 
     if len(img_list) == 0:
@@ -118,12 +119,12 @@ def format_data(img_list : list[torch.Tensor]) -> torch.Tensor:
 
         formatted.append(img)
 
-    return torch.stack(formatted).unsqueeze(0)
+    return torch.stack(formatted)
 
 
 @torch.no_grad()
 def evaluate(
-    model : MultiViewDetector,
+    model : SingleViewBEVDetector,
     img : torch.Tensor,
     device : torch.device,
     num_classes : int = 60,
@@ -135,11 +136,18 @@ def evaluate(
     output : numbers of each items
     '''
 
-    if img.ndim != 5:
-        raise ValueError(f'img must have shape [B, N_views, C, H, W], got {tuple(img.shape)}')
+    if img.ndim == 5:
+        if img.shape[0] != 1:
+            raise ValueError(f'5D img must have batch size 1, got {tuple(img.shape)}')
+        img = img.squeeze(0)
+    if img.ndim != 4:
+        raise ValueError(f'img must have shape [N_views, C, H, W] or [1, N_views, C, H, W], got {tuple(img.shape)}')
 
+    view_indices = torch.arange(img.shape[0], device=device).clamp(max=4)
+    viewpoint = F.one_hot(view_indices, num_classes=5).float()
 
-    pred_heatmap = model(img.to(device))
+    pred_heatmap = model(img.to(device), viewpoint=viewpoint)
+    pred_heatmap = pred_heatmap.amax(dim=0, keepdim=True)
     decoded = decode_predictions(
         pred_heatmap,
         topk=topk,
@@ -163,7 +171,7 @@ def main(
     ):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = MultiViewDetector().to(device)
+    model = SingleViewBEVDetector().to(device)
     load_model(model, model_path, device)
     model.eval()
 

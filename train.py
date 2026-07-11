@@ -1,18 +1,23 @@
 import argparse
 import pickle
 import torch
+import torch.nn.functional as F
 import os
+<<<<<<< Updated upstream
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
+=======
+from torch.utils.data import DataLoader
+>>>>>>> Stashed changes
 from sklearn.model_selection import KFold
 
 from data.make_filename import make_filename
-from src.dataset import MultiViewDataset, collate_fn
+from src.dataset import SingleViewDataset, collate_single_view_fn
 from src.dataset import format_data
 from src.loss import gaussian_focal_loss
-from src.model.multiview_detection import MultiViewDetector
+from src.model.viewpoint_bev_detection import SingleViewBEVDetector
 from src.test import test
-from src.test import MultiViewEvalDataset, collate_eval_fn
+from src.test import SingleViewEvalDataset, collate_single_view_eval_fn
 
 HOMOGRAPHY_FREEZE_EPOCHS = 50
 HOMOGRAPHY_LR_MULT = 0.1
@@ -354,16 +359,20 @@ def train_one_epoch(
     if len(loader) == 0:
         raise ValueError('train loader is empty')
 
-    for images, gt_heatmap in loader:
+    for images, gt_heatmap, view_indices in loader:
         images = images.to(device)
         gt_heatmap = gt_heatmap.to(device)
+<<<<<<< Updated upstream
         images = homogrphy_augmentation(
                 images,
                 homography_augmentation_matrices,
                 )
+=======
+        viewpoint = F.one_hot(view_indices.to(device), num_classes=5).float()
+>>>>>>> Stashed changes
 
         # forward
-        pred_heatmap = model(images) 
+        pred_heatmap = model(images, viewpoint=viewpoint)
 
         # loss
         loss = gaussian_focal_loss(pred_heatmap, gt_heatmap)
@@ -408,23 +417,26 @@ def make_k_fold_loaders(
     split_indices = list(kfold.split(data_list))
     train_indices, val_indices = split_indices[fold]
 
-    train_dataset = MultiViewDataset(data_list, num_classes, output_size)
-    val_dataset = MultiViewEvalDataset(data_list)
+    train_data = [data_list[idx] for idx in train_indices.tolist()]
+    val_data = [data_list[idx] for idx in val_indices.tolist()]
+
+    train_dataset = SingleViewDataset(train_data, num_classes, output_size)
+    val_dataset = SingleViewEvalDataset(val_data)
 
     train_loader = DataLoader(
-            Subset(train_dataset, train_indices.tolist()),
+            train_dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=num_workers,
-            collate_fn=collate_fn,
+            collate_fn=collate_single_view_fn,
             )
 
     val_loader = DataLoader(
-            Subset(val_dataset, val_indices.tolist()),
+            val_dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_eval_fn,
+            collate_fn=collate_single_view_eval_fn,
             )
 
     return train_loader, val_loader
@@ -440,15 +452,15 @@ def make_train_loaders(
     if test_data_list is None:
         test_data_list = data_list
 
-    train_dataset = MultiViewDataset(data_list, num_classes, output_size)
-    test_dataset = MultiViewEvalDataset(test_data_list)
+    train_dataset = SingleViewDataset(data_list, num_classes, output_size)
+    test_dataset = SingleViewEvalDataset(test_data_list)
 
     train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=num_workers,
-            collate_fn=collate_fn,
+            collate_fn=collate_single_view_fn,
             )
 
     test_loader = DataLoader(
@@ -456,7 +468,7 @@ def make_train_loaders(
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_eval_fn,
+            collate_fn=collate_single_view_eval_fn,
             )
 
     return train_loader, test_loader
@@ -636,7 +648,7 @@ def train_k_fold(
                     )
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train MultiViewDetector.')
+    parser = argparse.ArgumentParser(description='Train SingleViewBEVDetector.')
     parser.add_argument(
             '--epochs',
             type=int,
@@ -685,15 +697,13 @@ def main(epochs=50, weights=None, k_folds=5, fold_interval=5):
     data_list = make_data_list()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = MultiViewDetector(
-            num_views=5,
+    model = SingleViewBEVDetector(
             num_classes=60,
             img_channels=3,
             fpn_out_channels=256,
             backbone_width=0.25,
             backbone_depth=0.33,
-            attn_heads=4,
-            spatial_ds=2,
+            heatmap_size=(60, 80),
             ).to(device)
 
     train_k_fold(

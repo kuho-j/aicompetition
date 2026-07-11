@@ -2,11 +2,12 @@ import argparse
 import time
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from data.make_filename import make_filename
 from src.dataset import format_data
-from src.model.multiview_detection import MultiViewDetector
+from src.model.viewpoint_bev_detection import SingleViewBEVDetector
 from src.predict import decode_predictions
 
 
@@ -35,6 +36,49 @@ def collate_eval_fn(batch):
 
     return {
         "images": torch.stack([b["images"] for b in batch]),
+        "classes": [b["classes"] for b in batch],
+        "centers": [b["centers"] for b in batch],
+    }
+
+
+class SingleViewEvalDataset(Dataset):
+    def __init__(self, data_list: list[dict[str, torch.Tensor]]):
+        if len(data_list) == 0:
+            raise ValueError("data_list is empty")
+        self.data_list = data_list
+        self.samples: list[tuple[int, int]] = []
+
+        for sample_idx, sample in enumerate(data_list):
+            images = sample["images"]
+            if images.ndim != 4:
+                raise ValueError(
+                    f"sample images must have shape [N, C, H, W], got {tuple(images.shape)}"
+                )
+            for view_idx in range(images.shape[0]):
+                self.samples.append((sample_idx, view_idx))
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        sample_idx, view_idx = self.samples[idx]
+        sample = self.data_list[sample_idx]
+        return {
+            "image": sample["images"][view_idx],
+            "view_index": torch.tensor(view_idx, dtype=torch.long),
+            "classes": sample["classes"],
+            "centers": sample["centers"],
+        }
+
+
+def collate_single_view_eval_fn(batch):
+    image_shapes = [tuple(b["image"].shape) for b in batch]
+    if len(set(image_shapes)) != 1:
+        raise ValueError(f"all image tensors must have the same shape, got {image_shapes}")
+
+    return {
+        "images": torch.stack([b["image"] for b in batch]),
+        "view_indices": torch.stack([b["view_index"] for b in batch]),
         "classes": [b["classes"] for b in batch],
         "centers": [b["centers"] for b in batch],
     }
@@ -128,11 +172,15 @@ def evaluate(
 
     for batch in loader:
         images = batch["images"].to(device)
+        view_indices = batch.get("view_indices")
+        viewpoint = None
+        if view_indices is not None:
+            viewpoint = F.one_hot(view_indices.to(device), num_classes=5).float()
 
         if device.type == "cuda":
             torch.cuda.synchronize()
         start = time.perf_counter()
-        pred_heatmap = model(images)
+        pred_heatmap = model(images, viewpoint=viewpoint)
         if device.type == "cuda":
             torch.cuda.synchronize()
         elapsed += time.perf_counter() - start
@@ -167,7 +215,7 @@ def evaluate(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate MultiViewDetector.")
+    parser = argparse.ArgumentParser(description="Evaluate SingleViewBEVDetector.")
     parser.add_argument("--weights", required=True, help="Path to model checkpoint.")
     parser.add_argument("--filename-path", default="data/filename.txt")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -223,25 +271,23 @@ def test(
             filename_path,
             expected_num_views=num_views,
         )
-        dataset = MultiViewEvalDataset(data_list)
+        dataset = SingleViewEvalDataset(data_list)
         loader = DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_eval_fn,
+            collate_fn=collate_single_view_eval_fn,
         )
 
     if model is None:
-        model = MultiViewDetector(
-            num_views=num_views,
+        model = SingleViewBEVDetector(
             num_classes=num_classes,
             img_channels=3,
             fpn_out_channels=256,
             backbone_width=0.25,
             backbone_depth=0.33,
-            attn_heads=4,
-            spatial_ds=2,
+            heatmap_size=(60, 80),
         ).to(device)
 
     if weights is not None:
