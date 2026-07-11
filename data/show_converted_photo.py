@@ -55,8 +55,8 @@ img_path_list = [
 ]
 if __name__ == '__main__':
 
-    homography_path = 'homography_matrix_train_to_video.pkl'
-    #homography_path = 'homography_matrix_for_train_dataset.pkl'
+    #homography_path = 'homography_matrix_train_to_video.pkl'
+    homography_path = 'homography_matrix_for_train_dataset.pkl'
     file_info = 'Middle 11 12084'
     img_path_list = make_filename(file_info)[0]
 
