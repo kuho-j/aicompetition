@@ -1,3 +1,4 @@
+import cv2
 
 grid_dict : dict[str, list[tuple]]= {
     'trainClose cam1' : [],
@@ -6,10 +7,10 @@ grid_dict : dict[str, list[tuple]]= {
     'trainClose cam4' : [],
     'trainClose cam5' : [],
     'trainMiddle cam1' : [],
-    'traiMiddle cam2' : [],
-    'traiMiddle cam3' : [],
-    'traiMiddle cam4' : [],
-    'traiMiddle cam5' : [],
+    'trainMiddle cam2' : [],
+    'trainMiddle cam3' : [],
+    'trainMiddle cam4' : [],
+    'trainMiddle cam5' : [],
     'trainLong cam1' : [],
     'trainLong cam2' : [],
     'trainLong cam3' : [],
@@ -27,13 +28,23 @@ grid_dict : dict[str, list[tuple]]= {
     'backgroundwhite cam4' : [],
 }
 
-
-def load_grid(info : str):
+def load_data_bev(fileinfo : str):
     '''
-    info : 
+    fileinfo : line of data/filepaths_bev.txt
+    '''
+    fileinfo = fileinfo.split(' ')
+    grid_type = ' '.join(fileinfo[:2])
+    img_path = fileinfo[-1]
     
-    e.g.
-    train cam1
-    -> it means the photo is from the train dataset in the view of cam1
-    '''
-    return grid_dict[info]
+    img = cv2.imread(img_path)
+
+    # BGR -> RGB
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    
+    # (H, W, C) -> (C, H, W)
+    img = img.transpose(2, 0, 1)
+    
+    return {
+        'image' : img,
+        'grid_points' : grid_dict[grid_type]
+    }
