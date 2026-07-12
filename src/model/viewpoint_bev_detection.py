@@ -192,7 +192,7 @@ class SingleViewBEVDetector(nn.Module):
         fpn_out_channels: int = 256,
         backbone_width: float = 0.25,
         backbone_depth: float = 0.33,
-        bev_size: tuple[int, int] = (128, 128),
+        bev_size: tuple[int, int] = (192, 256),
         heatmap_size: tuple[int, int] = (60, 80),
         num_grid_points: int = 4,
         decoder_channels: int = 192,

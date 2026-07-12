@@ -7,8 +7,13 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from data.load_data_for_bev_train import load_data_bev
+from src.aug import rotation_augmentation
 from src.dataset import GridBEVDataset, collate_grid_bev_fn
 from src.model.grid_bev_layer import GridToBEVLayer
+
+
+ROTATION_AUG_START_EPOCH = 50
+ROTATION_AUG_DEGREE_RANGE = (-15.0, 15.0)
 
 
 def fit_grid_points_to_count(
@@ -357,6 +362,21 @@ def train_one_epoch(
 
     for step, batch in enumerate(loader, start=1):
         batch = move_batch_to_device(batch, device)
+        if epoch > ROTATION_AUG_START_EPOCH:
+            images, grid_points, coordinate_valid = rotation_augmentation(
+                batch["image"],
+                coordinates=batch["grid_points"],
+                probability=1.0,
+                degree_range=ROTATION_AUG_DEGREE_RANGE,
+                return_coordinate_mask=True,
+            )
+            batch["image"] = images
+            batch["grid_points"] = grid_points
+            batch["grid_visible"] = batch["grid_visible"] * coordinate_valid.to(
+                device=batch["grid_visible"].device,
+                dtype=batch["grid_visible"].dtype,
+            )
+
         outputs = model(batch["image"])
         loss, logs = criterion(outputs, batch, model.bev_grid_points)
 
@@ -427,8 +447,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fpn-out-channels", type=int, default=256)
     parser.add_argument("--backbone-width", type=float, default=0.25)
     parser.add_argument("--backbone-depth", type=float, default=0.33)
-    parser.add_argument("--bev-height", type=int, default=128)
-    parser.add_argument("--bev-width", type=int, default=128)
+    parser.add_argument("--bev-height", type=int, default=192)
+    parser.add_argument("--bev-width", type=int, default=256)
     return parser.parse_args()
 
 
