@@ -1,11 +1,9 @@
 import argparse
 import torch
-import torch.nn.functional as F
 import os
 from torch.utils.data import DataLoader
 from sklearn.model_selection import KFold
 
-from data.make_filename import make_filename
 from src.aug import (
         HOMOGRAPHY_AUG_ALPHA_RANGE,
         HOMOGRAPHY_AUG_MAX_RETRIES,
@@ -17,16 +15,9 @@ from src.aug import (
         homography_augmentation,
         load_homography_augmentation_matrices,
         )
-from src.dataset import SingleViewDataset, collate_single_view_fn
-from src.dataset import format_data
-from src.loss import gaussian_focal_loss
+from src.dataset import ImageHeatmapDataset, collate_image_heatmap_fn
+from src.loss import shape_heatmap_loss
 from src.model.viewpoint_bev_detection import SingleViewBEVDetector
-from src.test import test
-from src.test import SingleViewEvalDataset, collate_single_view_eval_fn
-
-HOMOGRAPHY_FREEZE_EPOCHS = 50
-HOMOGRAPHY_LR_MULT = 0.1
-HOMOGRAPHY_REG_WEIGHT = 1e-6
 
 def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints', fold=None):
     os.makedirs(save_dir, exist_ok=True)
@@ -78,56 +69,53 @@ def load_checkpoint(model, optimizer, ckpt_path, device):
 
     return start_epoch
 
-def iter_homography_params(model):
-    for name, param in model.named_parameters():
-        if 'homography_params' in name:
-            yield name, param
-
-def has_homography_params(model):
-    return any(True for _ in iter_homography_params(model))
-
-def set_homography_trainable(model, trainable):
-    for _, param in iter_homography_params(model):
-        param.requires_grad = trainable
-
 def make_optimizer(model, lr):
-    homography_params = []
-    base_params = []
+    trainable_params = [
+            param
+            for param in model.parameters()
+            if param.requires_grad
+            ]
+    if len(trainable_params) == 0:
+        raise ValueError('model has no trainable parameters')
 
-    for name, param in model.named_parameters():
-        if 'homography_params' in name:
-            homography_params.append(param)
-        else:
-            base_params.append(param)
+    return torch.optim.Adam(trainable_params, lr=lr)
 
-    param_groups = [{'params': base_params, 'lr': lr}]
-    if homography_params:
-        param_groups.append({
-            'params': homography_params,
-            'lr': lr * HOMOGRAPHY_LR_MULT,
-        })
+def _checkpoint_state_dict(checkpoint):
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        return checkpoint['model_state_dict']
+    return checkpoint
 
-    return torch.optim.Adam(param_groups, lr=lr)
+def load_bev_layer_checkpoint(model, ckpt_path, device, strict=True):
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(f'BEV layer checkpoint not found: {ckpt_path}')
 
-def capture_homography_reference(model, device):
-    return {
-        name: param.detach().clone().to(device)
-        for name, param in iter_homography_params(model)
-    }
+    checkpoint = torch.load(ckpt_path, map_location=device)
+    state_dict = _checkpoint_state_dict(checkpoint)
 
-def homography_regularization(model, reference):
-    if not reference:
-        return None
+    prefixed = {
+            key[len('grid_to_bev.'):]: value
+            for key, value in state_dict.items()
+            if key.startswith('grid_to_bev.')
+            }
+    if prefixed:
+        state_dict = prefixed
 
-    reg = None
-    for name, param in iter_homography_params(model):
-        if name not in reference:
-            continue
+    missing, unexpected = model.grid_to_bev.load_state_dict(state_dict, strict=strict)
+    print(f'loaded BEV layer checkpoint: {ckpt_path}')
+    if missing:
+        print(f'BEV layer missing keys: {missing}')
+    if unexpected:
+        print(f'BEV layer unexpected keys: {unexpected}')
 
-        loss = (param - reference[name].to(param.device, param.dtype)).pow(2).mean()
-        reg = loss if reg is None else reg + loss
+def set_bev_layer_trainable(model, trainable):
+    if hasattr(model, 'set_grid_to_bev_trainable'):
+        model.set_grid_to_bev_trainable(trainable)
+        return
 
-    return reg
+    for param in model.grid_to_bev.parameters():
+        param.requires_grad = trainable
+    if not trainable:
+        model.grid_to_bev.eval()
 
 
 def train_one_epoch(
@@ -135,8 +123,6 @@ def train_one_epoch(
         loader,
         optimizer,
         device,
-        homography_reference=None,
-        homography_reg_weight=0.0,
         homography_augmentation_matrices=None,
         ):
     model.train()
@@ -145,14 +131,12 @@ def train_one_epoch(
     if len(loader) == 0:
         raise ValueError('train loader is empty')
 
-    for images, gt_heatmap, view_indices in loader:
+    for images, gt_heatmap in loader:
         images = images.to(device)
         gt_heatmap = gt_heatmap.to(device)
-        view_indices = view_indices.to(device)
         images = homography_augmentation(
                 images,
                 homography_augmentation_matrices,
-                view_indices=view_indices,
                 probability=HOMOGRAPHY_AUG_PROB,
                 max_retries=HOMOGRAPHY_AUG_MAX_RETRIES,
                 alpha_range=HOMOGRAPHY_AUG_ALPHA_RANGE,
@@ -161,16 +145,12 @@ def train_one_epoch(
                 strict_min_valid_ratio=HOMOGRAPHY_AUG_STRICT_MIN_VALID_RATIO,
                 strict_views=HOMOGRAPHY_AUG_STRICT_VIEWS,
                 )
-        viewpoint = F.one_hot(view_indices, num_classes=5).float()
 
         # forward
-        pred_heatmap = model(images, viewpoint=viewpoint)
+        outputs = model(images, return_aux=True)
 
         # loss
-        loss = gaussian_focal_loss(pred_heatmap, gt_heatmap)
-        h_reg = homography_regularization(model, homography_reference)
-        if h_reg is not None and homography_reg_weight > 0:
-            loss = loss + homography_reg_weight * h_reg
+        loss = shape_heatmap_loss(outputs["heatmap_logits"], gt_heatmap)
 
         # backward
         optimizer.zero_grad()
@@ -181,10 +161,27 @@ def train_one_epoch(
     
     return total_loss / len(loader)
 
-def configure_homography_phase(model, epoch):
-    trainable = epoch > HOMOGRAPHY_FREEZE_EPOCHS
-    set_homography_trainable(model, trainable)
-    return trainable
+@torch.no_grad()
+def evaluate_loss(
+        model,
+        loader,
+        device,
+        ):
+    model.eval()
+    total_loss = 0
+
+    if len(loader) == 0:
+        raise ValueError('eval loader is empty')
+
+    for images, gt_heatmap in loader:
+        images = images.to(device)
+        gt_heatmap = gt_heatmap.to(device)
+
+        outputs = model(images, return_aux=True)
+        loss = shape_heatmap_loss(outputs["heatmap_logits"], gt_heatmap)
+        total_loss += loss.item()
+
+    return total_loss / len(loader)
 
 def make_k_fold_loaders(
         data_list,
@@ -212,15 +209,15 @@ def make_k_fold_loaders(
     train_data = [data_list[idx] for idx in train_indices.tolist()]
     val_data = [data_list[idx] for idx in val_indices.tolist()]
 
-    train_dataset = SingleViewDataset(train_data, num_classes, output_size)
-    val_dataset = SingleViewEvalDataset(val_data)
+    train_dataset = ImageHeatmapDataset(train_data, num_classes, output_size)
+    val_dataset = ImageHeatmapDataset(val_data, num_classes, output_size)
 
     train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=num_workers,
-            collate_fn=collate_single_view_fn,
+            collate_fn=collate_image_heatmap_fn,
             )
 
     val_loader = DataLoader(
@@ -228,7 +225,7 @@ def make_k_fold_loaders(
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_single_view_eval_fn,
+            collate_fn=collate_image_heatmap_fn,
             )
 
     return train_loader, val_loader
@@ -244,15 +241,15 @@ def make_train_loaders(
     if test_data_list is None:
         test_data_list = data_list
 
-    train_dataset = SingleViewDataset(data_list, num_classes, output_size)
-    test_dataset = SingleViewEvalDataset(test_data_list)
+    train_dataset = ImageHeatmapDataset(data_list, num_classes, output_size)
+    test_dataset = ImageHeatmapDataset(test_data_list, num_classes, output_size)
 
     train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=num_workers,
-            collate_fn=collate_single_view_fn,
+            collate_fn=collate_image_heatmap_fn,
             )
 
     test_loader = DataLoader(
@@ -260,7 +257,7 @@ def make_train_loaders(
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_single_view_eval_fn,
+            collate_fn=collate_image_heatmap_fn,
             )
 
     return train_loader, test_loader
@@ -270,6 +267,8 @@ def train(
         data_list,
         device,
         resume_path=None,
+        bev_weights=None,
+        train_bev_layer=False,
         epochs=50,
         lr=1e-4,
         test_data_list=None,
@@ -290,14 +289,17 @@ def train(
     start_epoch = 1
     homography_augmentation_matrices = load_homography_augmentation_matrices()
 
-    configure_homography_phase(model, start_epoch)
+    if bev_weights is not None:
+        load_bev_layer_checkpoint(model, bev_weights, device)
+    elif not train_bev_layer:
+        print('warning: BEV layer is frozen without --bev-weights; using initialized BEV weights')
+
+    set_bev_layer_trainable(model, train_bev_layer)
     optimizer = make_optimizer(model, lr)
-    homography_reference = capture_homography_reference(model, device)
 
     if resume_path is not None:
         start_epoch = load_checkpoint(model, optimizer, resume_path, device)
-        configure_homography_phase(model, start_epoch)
-        homography_reference = capture_homography_reference(model, device)
+        set_bev_layer_trainable(model, train_bev_layer)
 
     train_loader, test_loader = make_train_loaders(
             data_list=data_list,
@@ -309,20 +311,15 @@ def train(
             )
 
     for epoch in range(start_epoch, start_epoch + epochs):
-        homography_trainable = configure_homography_phase(model, epoch)
-        if has_homography_params(model) and (
-                epoch == start_epoch or epoch == HOMOGRAPHY_FREEZE_EPOCHS + 1
-                ):
-            phase = 'trainable' if homography_trainable else 'frozen'
-            print(f'[Epoch {epoch}] homography alignment: {phase}')
+        if epoch == start_epoch:
+            phase = 'trainable' if train_bev_layer else 'frozen'
+            print(f'[Epoch {epoch}] BEV layer: {phase}')
 
         loss = train_one_epoch(
                 model,
                 train_loader,
                 optimizer,
                 device,
-                homography_reference=homography_reference,
-                homography_reg_weight=HOMOGRAPHY_REG_WEIGHT if homography_trainable else 0.0,
                 homography_augmentation_matrices=homography_augmentation_matrices,
                 )
         print(f'[Epoch {epoch}] loss : {loss:.4f}')
@@ -330,20 +327,14 @@ def train(
         if epoch % test_interval == 0:
             save_checkpoint(model, optimizer, epoch)
 
-            precision, recall, fps = test(
+            val_loss = evaluate_loss(
                     model=model,
                     loader=test_loader,
                     device=device,
-                    topk=topk,
-                    score_threshold=score_threshold,
-                    center_threshold=center_threshold,
-                    print_result=False,
                     )
             print(
                     f'[Epoch {epoch}]',
-                    f'Precision: {precision:.4f},',
-                    f'Recall: {recall:.4f},',
-                    f'FPS: {fps:.2f}'
+                    f'val_loss: {val_loss:.4f}'
                     )
 
 def train_k_fold(
@@ -351,6 +342,8 @@ def train_k_fold(
         data_list,
         device,
         resume_path=None,
+        bev_weights=None,
+        train_bev_layer=False,
         epochs=50,
         lr=1e-4,
         n_splits=5,
@@ -372,14 +365,17 @@ def train_k_fold(
     start_epoch = 1
     homography_augmentation_matrices = load_homography_augmentation_matrices()
 
-    configure_homography_phase(model, start_epoch)
+    if bev_weights is not None:
+        load_bev_layer_checkpoint(model, bev_weights, device)
+    elif not train_bev_layer:
+        print('warning: BEV layer is frozen without --bev-weights; using initialized BEV weights')
+
+    set_bev_layer_trainable(model, train_bev_layer)
     optimizer = make_optimizer(model, lr)
-    homography_reference = capture_homography_reference(model, device)
 
     if resume_path is not None:
         start_epoch = load_checkpoint(model, optimizer, resume_path, device)
-        configure_homography_phase(model, start_epoch)
-        homography_reference = capture_homography_reference(model, device)
+        set_bev_layer_trainable(model, train_bev_layer)
 
     active_fold = None
     train_loader = None
@@ -402,20 +398,15 @@ def train_k_fold(
                     )
             print(f'[Epoch {epoch}] using fold {active_fold + 1}/{n_splits}')
 
-        homography_trainable = configure_homography_phase(model, epoch)
-        if has_homography_params(model) and (
-                epoch == start_epoch or epoch == HOMOGRAPHY_FREEZE_EPOCHS + 1
-                ):
-            phase = 'trainable' if homography_trainable else 'frozen'
-            print(f'[Epoch {epoch}] homography alignment: {phase}')
+        if epoch == start_epoch:
+            phase = 'trainable' if train_bev_layer else 'frozen'
+            print(f'[Epoch {epoch}] BEV layer: {phase}')
 
         loss = train_one_epoch(
                 model,
                 train_loader,
                 optimizer,
                 device,
-                homography_reference=homography_reference,
-                homography_reg_weight=HOMOGRAPHY_REG_WEIGHT if homography_trainable else 0.0,
                 homography_augmentation_matrices=homography_augmentation_matrices,
                 )
         print(f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}] loss : {loss:.4f}')
@@ -423,20 +414,14 @@ def train_k_fold(
         if epoch % fold_interval == 0:
             save_checkpoint(model, optimizer, epoch, fold=active_fold + 1)
 
-            precision, recall, fps = test(
+            val_loss = evaluate_loss(
                     model=model,
                     loader=val_loader,
                     device=device,
-                    topk=topk,
-                    score_threshold=score_threshold,
-                    center_threshold=center_threshold,
-                    print_result=False,
                     )
             print(
                     f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}]',
-                    f'Precision: {precision:.4f},',
-                    f'Recall: {recall:.4f},',
-                    f'FPS: {fps:.2f}'
+                    f'val_loss: {val_loss:.4f}'
                     )
 
 def parse_args():
@@ -453,6 +438,22 @@ def parse_args():
             help='Path to a checkpoint to resume from.',
             )
     parser.add_argument(
+            '--bev-weights',
+            default=None,
+            help='Path to a trained GridToBEVLayer checkpoint.',
+            )
+    parser.add_argument(
+            '--train-bev-layer',
+            action='store_true',
+            help='Also train the BEV layer. By default only the decoder is trained.',
+            )
+    parser.add_argument(
+            '--num-grid-points',
+            type=int,
+            default=9,
+            help='Number of reference grid points used by the trained BEV layer.',
+            )
+    parser.add_argument(
             '--k-folds',
             type=int,
             default=5,
@@ -466,26 +467,38 @@ def parse_args():
             )
     return parser.parse_args()
 
-def make_data_list():
+def make_data_list(filepath='data/filepaths_img_and_ht.txt'):
     data_list = []
-    skipped = 0
 
-    with open('data/filename.txt', 'r') as file:
-        for line in file:
-            filename_info = make_filename(line)
-            sample = format_data(filename_info)
-
-            if sample is None:
-                skipped += 1
+    with open(filepath, 'r') as file:
+        for line_num, line in enumerate(file, start=1):
+            parts = line.strip().split()
+            if len(parts) == 0:
                 continue
+            if len(parts) != 2:
+                raise ValueError(
+                        f'{filepath}:{line_num} must contain image path and heatmap path, got {line.strip()}'
+                        )
 
-            data_list.append(sample)
+            image_path, heatmap_path = parts
+            data_list.append({
+                    'image_path': image_path,
+                    'heatmap_path': heatmap_path,
+                    })
 
-    print(f'loaded samples: {len(data_list)}, skipped samples: {skipped}')
+    print(f'loaded samples: {len(data_list)} from {filepath}')
 
     return data_list
 
-def main(epochs=50, weights=None, k_folds=5, fold_interval=5):
+def main(
+        epochs=50,
+        weights=None,
+        bev_weights=None,
+        train_bev_layer=False,
+        num_grid_points=9,
+        k_folds=5,
+        fold_interval=5,
+        ):
     data_list = make_data_list()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -496,6 +509,7 @@ def main(epochs=50, weights=None, k_folds=5, fold_interval=5):
             backbone_width=0.25,
             backbone_depth=0.33,
             heatmap_size=(60, 80),
+            num_grid_points=num_grid_points,
             ).to(device)
 
     train_k_fold(
@@ -503,6 +517,8 @@ def main(epochs=50, weights=None, k_folds=5, fold_interval=5):
             data_list,
             device,
             resume_path=weights,
+            bev_weights=bev_weights,
+            train_bev_layer=train_bev_layer,
             epochs=epochs,
             n_splits=k_folds,
             fold_interval=fold_interval,
@@ -513,6 +529,9 @@ if __name__ == '__main__':
     main(
             epochs=args.epochs,
             weights=args.weights,
+            bev_weights=args.bev_weights,
+            train_bev_layer=args.train_bev_layer,
+            num_grid_points=args.num_grid_points,
             k_folds=args.k_folds,
             fold_interval=args.fold_interval,
             )

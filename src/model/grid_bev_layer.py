@@ -37,6 +37,8 @@ class GridToBEVLayer(nn.Module):
     Diagnostic/auxiliary outputs:
         grid_points: [B, N, 2] in input-image pixel coordinates, ordered as (x, y)
         grid_confidence: [B, N]
+        grid_visible: [B, N], confidence-thresholded visibility mask
+        homography_point_mask: [B, N], points used for homography estimation
         homography: [B, 3, 3], mapping BEV normalized coords to feature normalized coords
         grid_logits: [B, N, feat_h, feat_w]
     """
@@ -50,6 +52,7 @@ class GridToBEVLayer(nn.Module):
         backbone_depth: float = 0.33,
         bev_size: tuple[int, int] = (192, 256),
         bev_grid_points: torch.Tensor | None = None,
+        visibility_threshold: float = 0.5,
     ):
         super().__init__()
         if num_grid_points < 4:
@@ -58,6 +61,7 @@ class GridToBEVLayer(nn.Module):
         self.num_grid_points = num_grid_points
         self.img_channels = img_channels
         self.bev_size = bev_size
+        self.visibility_threshold = visibility_threshold
 
         self.backbone = YOLOv8Backbone(img_channels, backbone_width, backbone_depth)
         self.fpn = FPNNeck(self.backbone.out_channels, fpn_out_channels)
@@ -97,7 +101,17 @@ class GridToBEVLayer(nn.Module):
             height=feat_h,
             width=feat_w,
         )
-        homography = self._estimate_homography(self.bev_grid_points, dst_feature_norm)
+        grid_visible = grid_confidence >= self.visibility_threshold
+        homography_point_mask = self._make_homography_point_mask(
+            grid_confidence,
+            grid_visible,
+            min_points=4,
+        )
+        homography = self._estimate_homography(
+            self.bev_grid_points,
+            dst_feature_norm,
+            point_mask=homography_point_mask,
+        )
 
         bev_feature, bev_valid_mask = self._warp_to_bev(image_feature, homography)
 
@@ -106,6 +120,8 @@ class GridToBEVLayer(nn.Module):
             "bev_valid_mask": bev_valid_mask,
             "grid_points": grid_points_image,
             "grid_confidence": grid_confidence,
+            "grid_visible": grid_visible,
+            "homography_point_mask": homography_point_mask,
             "homography": homography,
             "grid_logits": grid_logits,
         }
@@ -180,15 +196,44 @@ class GridToBEVLayer(nn.Module):
         self,
         src_bev_norm: torch.Tensor,
         dst_feature_norm: torch.Tensor,
+        point_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         b, n, _ = dst_feature_norm.shape
         src = src_bev_norm.to(dst_feature_norm.device, dst_feature_norm.dtype)
         src = src.unsqueeze(0).expand(b, -1, -1)
 
+        if point_mask is not None:
+            if point_mask.shape != (b, n):
+                raise ValueError(
+                    f"point_mask must have shape {(b, n)}, got {tuple(point_mask.shape)}"
+                )
+            homographies = []
+            for batch_idx in range(b):
+                selected = point_mask[batch_idx].to(
+                    device=dst_feature_norm.device,
+                    dtype=torch.bool,
+                )
+                homographies.append(
+                    self._estimate_homography_dense(
+                        src[batch_idx : batch_idx + 1, selected],
+                        dst_feature_norm[batch_idx : batch_idx + 1, selected],
+                    )
+                )
+            return torch.cat(homographies, dim=0)
+
+        return self._estimate_homography_dense(src, dst_feature_norm)
+
+    @staticmethod
+    def _estimate_homography_dense(
+        src: torch.Tensor,
+        dst: torch.Tensor,
+    ) -> torch.Tensor:
+        b, n, _ = dst.shape
+
         x = src[..., 0]
         y = src[..., 1]
-        u = dst_feature_norm[..., 0]
-        v = dst_feature_norm[..., 1]
+        u = dst[..., 0]
+        v = dst[..., 1]
         zeros = torch.zeros_like(x)
         ones = torch.ones_like(x)
 
@@ -198,7 +243,23 @@ class GridToBEVLayer(nn.Module):
 
         _, _, vh = torch.linalg.svd(a)
         h = vh[:, -1, :].reshape(b, 3, 3)
-        return h / self._safe_denominator(h[:, 2:3, 2:3])
+        return h / GridToBEVLayer._safe_denominator(h[:, 2:3, 2:3])
+
+    @staticmethod
+    def _make_homography_point_mask(
+        confidence: torch.Tensor,
+        visible: torch.Tensor,
+        min_points: int,
+    ) -> torch.Tensor:
+        mask = visible.clone()
+        counts = mask.sum(dim=1)
+        if torch.all(counts >= min_points):
+            return mask
+
+        _, topk_indices = confidence.topk(k=min_points, dim=1)
+        fallback = torch.zeros_like(mask)
+        fallback.scatter_(1, topk_indices, True)
+        return torch.where((counts >= min_points).unsqueeze(1), mask, fallback)
 
     @staticmethod
     def _pixel_to_norm(points: torch.Tensor, height: int, width: int) -> torch.Tensor:

@@ -198,6 +198,7 @@ class SingleViewBEVDetector(nn.Module):
         decoder_channels: int = 192,
         viewpoint_dim: int = 16,
         viewpoint_embed_dim: int = 128,
+        grid_visibility_threshold: float = 0.5,
     ):
         super().__init__()
         self.heatmap_size = heatmap_size
@@ -208,6 +209,7 @@ class SingleViewBEVDetector(nn.Module):
             backbone_width=backbone_width,
             backbone_depth=backbone_depth,
             bev_size=bev_size,
+            visibility_threshold=grid_visibility_threshold,
         )
         self.viewpoint_conditioner = ViewpointConditioner(
             viewpoint_dim=viewpoint_dim,
@@ -219,6 +221,20 @@ class SingleViewBEVDetector(nn.Module):
             cond_dim=viewpoint_embed_dim,
             num_classes=num_classes,
         )
+        self.freeze_grid_to_bev = False
+
+    def set_grid_to_bev_trainable(self, trainable: bool) -> None:
+        self.freeze_grid_to_bev = not trainable
+        for param in self.grid_to_bev.parameters():
+            param.requires_grad = trainable
+        if not trainable:
+            self.grid_to_bev.eval()
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_grid_to_bev:
+            self.grid_to_bev.eval()
+        return self
 
     def forward(
         self,
@@ -231,7 +247,11 @@ class SingleViewBEVDetector(nn.Module):
             image = image.reshape(b * n, c, h, w)
             viewpoint = self._repeat_viewpoint_for_views(viewpoint, batch_size=b, num_views=n)
 
-        bev_outputs = self.grid_to_bev(image)
+        if self.freeze_grid_to_bev:
+            with torch.no_grad():
+                bev_outputs = self.grid_to_bev(image)
+        else:
+            bev_outputs = self.grid_to_bev(image)
         bev_feature = bev_outputs["bev_feature"]
         valid_mask = bev_outputs["bev_valid_mask"]
         cond = self.viewpoint_conditioner(

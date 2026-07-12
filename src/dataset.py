@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from PIL import Image
 import numpy as np
@@ -124,7 +125,6 @@ class SingleViewDataset(Dataset):
         return {
             "image": image,
             "heatmap": heatmap,
-            "view_index": torch.tensor(view_idx, dtype=torch.long),
         }
 
 
@@ -135,9 +135,129 @@ def collate_single_view_fn(batch):
 
     imgs = torch.stack([b["image"] for b in batch])
     hms = torch.stack([b["heatmap"] for b in batch])
-    view_indices = torch.stack([b["view_index"] for b in batch])
 
-    return imgs, hms, view_indices
+    return imgs, hms
+
+
+class ImageHeatmapDataset(Dataset):
+    """
+    Dataset for image paths paired with precomputed heatmap npz paths.
+
+    input:
+    data_list : list[dict]
+        'image_path' : jpg path
+        'heatmap_path' : npz path containing a 60-channel heatmap
+
+    output:
+        'image' : [3, H, W]
+        'heatmap' : [num_classes, output_h, output_w]
+    """
+
+    def __init__(
+        self,
+        data_list: list[dict],
+        num_classes: int = 60,
+        output_size: tuple[int, int] = (60, 80),
+    ):
+        if len(data_list) == 0:
+            raise ValueError("data_list is empty")
+
+        self.data_list = data_list
+        self.num_classes = num_classes
+        self.output_h, self.output_w = output_size
+
+        for idx, sample in enumerate(data_list):
+            if "image_path" not in sample:
+                raise ValueError(f"data_list[{idx}] does not contain 'image_path'")
+            if "heatmap_path" not in sample:
+                raise ValueError(f"data_list[{idx}] does not contain 'heatmap_path'")
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, idx):
+        sample = self.data_list[idx]
+        image = self._load_image(sample["image_path"])
+        heatmap = self._load_heatmap(sample["heatmap_path"])
+
+        return {
+            "image": image,
+            "heatmap": heatmap,
+        }
+
+    @staticmethod
+    def _load_image(image_path):
+        img = Image.open(image_path).convert("RGB")
+        img = np.array(img).astype(np.float32) / 255.0
+        img = np.transpose(img, (2, 0, 1))
+        return torch.from_numpy(img)
+
+    def _load_heatmap(self, heatmap_path):
+        with np.load(heatmap_path) as npz:
+            if "heatmap" in npz:
+                heatmap = npz["heatmap"]
+            elif "heatmaps" in npz:
+                heatmap = npz["heatmaps"]
+            elif "arr_0" in npz:
+                heatmap = npz["arr_0"]
+            elif len(npz.files) == 1:
+                heatmap = npz[npz.files[0]]
+            else:
+                raise ValueError(
+                    f"heatmap npz must contain one array or a heatmap key, got keys {npz.files}"
+                )
+
+        heatmap = torch.as_tensor(heatmap, dtype=torch.float32)
+
+        if heatmap.ndim == 4 and heatmap.shape[0] == 1:
+            heatmap = heatmap.squeeze(0)
+        if heatmap.ndim != 3:
+            raise ValueError(f"heatmap must have shape [C, H, W] or [H, W, C], got {tuple(heatmap.shape)}")
+        if heatmap.shape[0] != self.num_classes and heatmap.shape[-1] == self.num_classes:
+            heatmap = heatmap.permute(2, 0, 1)
+        heatmap = self._resize_heatmap(heatmap)
+        if heatmap.shape != (self.num_classes, self.output_h, self.output_w):
+            raise ValueError(
+                f"heatmap must have shape {(self.num_classes, self.output_h, self.output_w)}, "
+                f"got {tuple(heatmap.shape)}"
+            )
+
+        return heatmap
+
+    def _resize_heatmap(self, heatmap):
+        _, heatmap_h, heatmap_w = heatmap.shape
+        if (heatmap_h, heatmap_w) == (self.output_h, self.output_w):
+            return heatmap
+
+        if heatmap_h < self.output_h or heatmap_w < self.output_w:
+            raise ValueError(
+                f"heatmap spatial size {(heatmap_h, heatmap_w)} is smaller than "
+                f"target {(self.output_h, self.output_w)}"
+            )
+
+        heatmap = heatmap.unsqueeze(0)
+        if heatmap_h % self.output_h == 0 and heatmap_w % self.output_w == 0:
+            kernel_size = (heatmap_h // self.output_h, heatmap_w // self.output_w)
+            heatmap = F.max_pool2d(heatmap, kernel_size=kernel_size, stride=kernel_size)
+        else:
+            heatmap = F.adaptive_max_pool2d(heatmap, (self.output_h, self.output_w))
+
+        return heatmap.squeeze(0)
+
+
+def collate_image_heatmap_fn(batch):
+    image_shapes = [tuple(b["image"].shape) for b in batch]
+    if len(set(image_shapes)) != 1:
+        raise ValueError(f"all image tensors must have the same shape, got {image_shapes}")
+
+    heatmap_shapes = [tuple(b["heatmap"].shape) for b in batch]
+    if len(set(heatmap_shapes)) != 1:
+        raise ValueError(f"all heatmap tensors must have the same shape, got {heatmap_shapes}")
+
+    imgs = torch.stack([b["image"] for b in batch])
+    hms = torch.stack([b["heatmap"] for b in batch])
+
+    return imgs, hms
 
 
 class GridBEVDataset(Dataset):
