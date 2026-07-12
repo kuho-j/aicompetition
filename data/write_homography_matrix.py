@@ -1,157 +1,454 @@
-import numpy as np
-import cv2
+from pathlib import Path
 import pickle
 
-class MultiViewPlaneIntegrator:
+import cv2
+import numpy as np
+
+
+class SingleViewPlaneIntegrator:
     def __init__(self):
-        # 각 카메라별 가상 평면 변환 행렬(Homography)을 저장할 딕셔너리
         self.homography_matrices = {}
-        
-    def calibrate_camera_view(self, cam_idx, src_points, dst_points):
+
+    @staticmethod
+    def _valid_point_pairs(image_points, plane_points):
+        if len(image_points) != len(plane_points):
+            raise ValueError(
+                f"image_points and plane_points must have the same length: "
+                f"{len(image_points)} != {len(plane_points)}"
+            )
+
+        src_points = []
+        dst_points = []
+        valid_indices = []
+
+        for idx, (image_point, plane_point) in enumerate(zip(image_points, plane_points)):
+            if image_point is None:
+                continue
+            if len(image_point) != 2 or len(plane_point) != 2:
+                raise ValueError(f"Point at index {idx} must be [x, y] or None.")
+
+            src_points.append(image_point)
+            dst_points.append(plane_point)
+            valid_indices.append(idx)
+
+        if len(src_points) < 4:
+            raise ValueError(
+                f"At least 4 non-None image points are required, got {len(src_points)}."
+            )
+
+        return (
+            np.asarray(src_points, dtype=np.float32),
+            np.asarray(dst_points, dtype=np.float32),
+            valid_indices,
+        )
+
+    @staticmethod
+    def _robust_homography(src_pts, dst_pts, reproj_threshold=5.0):
+        # With only 4 points, no extra correspondence exists for outlier rejection.
+        if len(src_pts) == 4:
+            h, _ = cv2.findHomography(src_pts, dst_pts, method=0)
+            if h is None:
+                raise RuntimeError("Failed to estimate a homography from 4 points.")
+            inlier_mask = np.ones((4, 1), dtype=np.uint8)
+            return h, inlier_mask
+
+        method = getattr(cv2, "USAC_MAGSAC", cv2.RANSAC)
+        h, inlier_mask = cv2.findHomography(
+            src_pts,
+            dst_pts,
+            method=method,
+            ransacReprojThreshold=reproj_threshold,
+            maxIters=10000,
+            confidence=0.995,
+        )
+
+        if h is None or inlier_mask is None:
+            h, inlier_mask = cv2.findHomography(
+                src_pts,
+                dst_pts,
+                method=cv2.RANSAC,
+                ransacReprojThreshold=reproj_threshold,
+                maxIters=10000,
+                confidence=0.995,
+            )
+
+        if h is None or inlier_mask is None:
+            raise RuntimeError("Failed to estimate a homography from the provided points.")
+
+        inlier_mask = inlier_mask.astype(bool).reshape(-1)
+        if np.count_nonzero(inlier_mask) >= 4:
+            refined_h, _ = cv2.findHomography(src_pts[inlier_mask], dst_pts[inlier_mask], method=0)
+            if refined_h is not None:
+                h = refined_h
+
+        return h, inlier_mask.reshape(-1, 1).astype(np.uint8)
+
+    def calibrate_camera_view(self, cam_idx, image_points, plane_points, reproj_threshold=5.0):
         """
-        각 시점의 이미지 점들과 가상 평면의 실제 격자 좌표를 매칭하여 변환 행렬을 생성합니다.
+        Estimate one view's homography from image points to virtual plane points.
+
         Args:
-            cam_idx (int): 카메라 번호 (0 ~ 4)
-            src_points (list or np.array): 이미지 상에서 찾은 컬러 점 좌표 [[u, v], ...] (최소 4개 이상)
-            dst_points (list or np.array): 가상 평면계에서의 실제 목표 좌표 [[x, y], ...]
+            cam_idx (int): Camera/view id to save in the output dict.
+            image_points (list): Image coordinates. Each item is [u, v] or None.
+            plane_points (list): Matching virtual plane coordinates [[x, y], ...].
+            reproj_threshold (float): RANSAC/USAC reprojection threshold in pixels.
         """
-        src_pts = np.array(src_points, dtype=np.float32)
-        dst_pts = np.array(dst_points, dtype=np.float32)
-        
-        # 호모그래피 변환 행렬 계산
-        H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-        self.homography_matrices[cam_idx] = H
-        print(f"[Cam {cam_idx}] 캘리브레이션 완료 (변환 행렬 생성됨)")
-        print(f"변환 행혈:\n{H}")
+        src_pts, dst_pts, valid_indices = self._valid_point_pairs(image_points, plane_points)
+        h, inlier_mask = self._robust_homography(src_pts, dst_pts, reproj_threshold)
+
+        if abs(h[2, 2]) > 1e-12:
+            h = h / h[2, 2]
+
+        self.homography_matrices[cam_idx] = h
+
+        inlier_indices = [
+            valid_indices[i] for i, is_inlier in enumerate(inlier_mask.reshape(-1)) if is_inlier
+        ]
+        print(f"[Cam {cam_idx}] calibration complete")
+        print(f"valid point indices: {valid_indices}")
+        print(f"inlier point indices: {inlier_indices}")
+        print(f"homography:\n{h}")
 
     def transform_labels_to_plane(self, cam_idx, object_labels):
-        """
-        특정 시점 카메라의 물체 라벨(좌표)을 가상 평면 좌표로 변환합니다.
-        Args:
-            cam_idx (int): 카메라 번호
-            object_labels (np.array): 이미지 상의 물체 위치 [[u1, v1], [u2, v2], ...]
-        Returns:
-            np.array: 가상 평면 위의 [X, Y] 좌표 리스트
-        """
         if cam_idx not in self.homography_matrices:
-            raise ValueError(f"카메라 {cam_idx}의 캘리브레이션이 먼저 수행되어야 합니다.")
-            
-        H = self.homography_matrices[cam_idx]
-        
-        # OpenCV perspectiveTransform 사용을 위해 데이터 구조 변경 (N, 1, 2)
-        pts = np.array(object_labels, dtype=np.float32).reshape(-1, 1, 2)
-        
-        # 가상 평면으로 좌표 투영
-        transformed_pts = cv2.perspectiveTransform(pts, H)
-        
-        # 다시 원래 포맷 (N, 2)로 되돌려 반환
+            raise ValueError(f"Camera {cam_idx} must be calibrated first.")
+
+        h = self.homography_matrices[cam_idx]
+        pts = np.asarray(object_labels, dtype=np.float32).reshape(-1, 1, 2)
+        transformed_pts = cv2.perspectiveTransform(pts, h)
         return transformed_pts.reshape(-1, 2)
 
-# --- 사용 예시 (실행 단계) ---
+    def transform_plane_to_image(self, cam_idx, plane_points):
+        if cam_idx not in self.homography_matrices:
+            raise ValueError(f"Camera {cam_idx} must be calibrated first.")
+
+        h_inv = np.linalg.inv(self.homography_matrices[cam_idx])
+        pts = np.asarray(plane_points, dtype=np.float32).reshape(-1, 1, 2)
+        transformed_pts = cv2.perspectiveTransform(pts, h_inv)
+        return transformed_pts.reshape(-1, 2)
+
+    def transform_virtual_grid_to_image(
+        self,
+        cam_idx,
+        virtual_grid_points=((1, 1), (0, 1), (1, 0), (0, 0)),
+        plane_size=(640, 480),
+    ):
+        plane_w, plane_h = plane_size
+        plane_points = [
+            [grid_x * plane_w, grid_y * plane_h]
+            for grid_x, grid_y in virtual_grid_points
+        ]
+        return self.transform_plane_to_image(cam_idx, plane_points)
+
+
+MultiViewPlaneIntegrator = SingleViewPlaneIntegrator
+
+
 if __name__ == "__main__":
-    integrator = MultiViewPlaneIntegrator()
-    
-    # points from the each camera view
-    ''' this is for the background images'''
-    '''
-    image_points = {0 : [[237, 156],
-                         [262, 200],
-                         [313, 192],
-                         [286, 152]],
-                    1 : [[304, 167],
-                         [284, 210],
-                         [337, 209],
-                         [354, 162]],
-                    2 : [[282, 152],
-                         [280, 248],
-                         [395, 250],
-                         [392, 155]],
-                    3 : [[256, 186],
-                         [263, 240],
-                         [314, 258],
-                         [309, 197]],
-                    4 : [[343, 197],
-                         [336, 261],
-                         [386, 244],
-                         [393, 189]]}
-    '''
+    integrator = SingleViewPlaneIntegrator()
 
-    ''' this is for the test dataset background images '''
+    # Select exactly one view to calibrate.
+    cam_idx = 0
 
-    image_points = {0 : [[310, 355],
-                         [362, 355],
-                         [35, 204],
-                         [595, 201]],
-                    1 : [[255, 207],
-                         [472, 185],
-                         [384, 334],
-                         [520, 327]],
-                    2 : [[429, 150],
-                         [624, 187],
-                         [343, 260],
-                         [446, 299]],
-                    3 : [[422, 204],
-                         [207, 182],
-                         [285, 350],
-                         [154, 315]],
-                    4 : [[206, 193],
-                         [11, 217],
-                         [309, 319],
-                         [189, 334]],
-                    }
-    
-    # coordinates of virtual plane
-    virtual_plane_point = [
-        [284, 160],
-        [284, 240],
-        [355, 240],
-        [355, 160]
+    # About 9 points on the shared virtual plane. Keep this list fixed, then put
+    # either [u, v] or None at the same index in image_points below.
+    virtual_plane_points = [
+        [0, 0],
+        [320, 0],
+        [640, 0],
+        [0, 240],
+        [320, 240],
+        [640, 240],
+        [0, 480],
+        [320, 480],
+        [640, 480],
     ]
 
-    ''' this is for train_dataset '''
-    virtual_plane_points = {0 : [[310, 320],
-                                 [330, 320],
-                                 [0, 0],
-                                 [640, 0]],
-                            1 : [[640, 0],
-                                 [640, 480],
-                                 [330, 160],
-                                 [310, 320]],
-                            2 : [[640, 0],
-                                 [640, 480],
-                                 [330, 160],
-                                 [310, 320]],
-                            3 : [[0, 0],
-                                 [0, 480],
-                                 [330, 160],
-                                 [310, 320]],
-                            4 : [[0, 0],
-                                 [0, 480],
-                                 [330, 160],
-                                 [310, 320]],
-                            }
+    # Image points for only cam_idx. None means that virtual-plane point is not
+    # visible or has not been manually annotated in this image.
 
+    # trainClose cam1
+    trainClose_cam1 = [
+        [36, 204],
+        [316, 196],
+        [595, 201],
+        None,
+        [310, 304],
+        None,
+        None,
+        [320, 504],
+        None,
+    ]
 
+    # trainClose cam2
+    trainClose_cam2 = [
+        None,
+        [254, 351],
+        [253, 204],
+        None,
+        [448, 334],
+        [368, 193],
+        None,
+        [623, 312],
+        [472, 184]
+    ]
 
+    trainClose_cam3 = [
+        None,
+        [271, 231],
+        [431, 150],
+        None,
+        [295, 276],
+        [522, 162],
+        None,
+        [564, 339],
+        [622, 186]
+    ]
 
+    trainClose_cam4 = [
+        [421, 204],
+        [416, 362],
+        None,
+        [311, 189],
+        [222, 331],
+        None,
+        [208, 181],
+        [47, 304],
+        None,
+    ]
 
+    trainClose_cam5 = [
+        [206, 191],
+        [409, 297],
+        None,
+        [118, 201],
+        [240, 327],
+        None,
+        [6, 215],
+        [61, 357],
+        None
+    ]
 
+    trainLong_cam1 = [
+        None,
+        [270, 189],
+        [518, 240],
+        None,
+        [287, 308],
+        [556, 311],
+        None,
+        [312, 501],
+        [599, 413]
+    ]
 
-    
-    for i in range(5):
-        integrator.calibrate_camera_view(cam_idx=i, src_points=image_points[i], dst_points=virtual_plane_points[i])
-    
-    # save the dictionary
-    with open('homography_matrix_for_train_dataset.pkl', 'wb') as f:
-        pickle.dump(integrator.homography_matrices, f)
+    trainLong_cam2 = trainClose_cam2
+    trainLong_cam3 = trainClose_cam3
+    trainLong_cam4 = trainClose_cam4
 
-    # 2. 이후 AI가 2번 카메라 이미지 내에서 새로운 물체(라벨)를 탐지했을 때
-    # 물체의 바닥면 중심 좌표가 [300, 400]이라고 가정
-    detected_objects_cam2 = np.array([[300, 400]])
-    
-    # 3. 통합 가상 평면 좌표로 변환
-    integrated_coordinates = integrator.transform_labels_to_plane(cam_idx=2, object_labels=detected_objects_cam2)
-    
-    print("\n=== 변환 결과 ===")
-    print(f"카메라 2 이미지 내 물체 좌표: {detected_objects_cam2[0]}")
-    print(f"통합 가상 평면 내 변환 좌표 (X, Y): {integrated_coordinates[0]}")
+    trainLong_cam5 = [
+        [219, 184],
+        [432, 276],
+        None,
+        [130, 200],
+        [268, 331],
+        None,
+        [25, 228],
+        [98, 380],
+        None
+    ]
+
+    trainMiddle_cam1 = [
+        [28, 182],
+        [306, 168],
+        [588, 184],
+        None,
+        [310, 307],
+        None,
+        None,
+        [317, 478],
+        None
+    ]
+
+    trainMiddle_cam2 = trainLong_cam2
+    trainMiddle_cam3 = trainLong_cam3
+    trainMiddle_cam4 = trainLong_cam4
+    trainMiddle_cam5 = trainLong_cam5
+
+    backgroundwhite_cam0 = [
+        [103, 60],
+        [305, 146],
+        [418, 203],
+        [44, 206],
+        [324, 272],
+        [447, 298],
+        [32, 464],
+        [362, 432],
+        None
+    ]
+
+    backgroundwhite_cam1 = [
+        [214, 185],
+        [339, 129],
+        [510, 26],
+        [181, 272],
+        [312, 252],
+        [584, 204],
+        None,
+        [274, 424],
+        [589, 461],
+    ]
+
+    backgroundwhite_cam2 = [
+        [40, 50],
+        [337, 15],
+        [614, 62],
+        [19, 248],
+        [333, 268],
+        [631, 253],
+        [59, 434],
+        None,
+        [603, 422],
+    ]
+
+    backgroundwhite_cam3 = [
+        [79, 88],
+        [189, 61],
+        [556, 68],
+        [91, 206],
+        [207, 245],
+        [504, 331],
+        [115, 307],
+        None,
+        [439, 462]
+    ]
+
+    backgroundwhite_cam4 = [
+        [57, 39],
+        [391, 97],
+        [502, 139],
+        [60, 333],
+        [335, 284],
+        [475, 255],
+        [128, 482],
+        None,
+        [448, 346],
+    ]
+
+    background_cam0 = [
+        [9, 109],
+        [226, 90],
+        [348, 100],
+        [14, 254],
+        [290, 197],
+        [413, 173],
+        [129, 502],
+        None,
+        None
+    ]
+
+    background_cam1 = [
+        [223, 125],
+        [353, 98],
+        [573, 76],
+        [182, 212],
+        [305, 210],
+        [588, 219],
+        None,
+        None,
+        [548, 473]
+    ]
+
+    background_cam2 = [
+        [44, 37],
+        None,
+        [619, 48],
+        [23, 236],
+        [337, 248],
+        [635, 241],
+        [61, 419],
+        [342, 468],
+        [608, 400]
+    ]
+    background_cam3 = [
+        [148, 94],
+        [263, 64],
+        None,
+        [168, 213],
+        [289, 248],
+        [576, 342],
+        [191, 306],
+        None,
+        [507, 473]
+    ]
+
+    background_cam4 = [
+        [40, 46],
+        [379, 66],
+        [496, 99],
+        [75, 330],
+        [362, 252],
+        [479, 214],
+        [146, 473],
+        None,
+        [460, 310]
+    ]
+
+    image_points = {
+        'trainClose_cam1' : trainClose_cam1,
+        'trainClose_cam2' : trainClose_cam2,
+        'trainClose_cam3' : trainClose_cam3,
+        'trainClose_cam4' : trainClose_cam4,
+        'trainClose_cam5' : trainClose_cam5,
+        'trainLong_cam1' : trainLong_cam1,
+        'trainLong_cam2' : trainLong_cam2,
+        'trainLong_cam3' : trainLong_cam3,
+        'trainLong_cam4' : trainLong_cam4,
+        'trainLong_cam5' : trainLong_cam5,
+        'trainMiddle_cam1' : trainMiddle_cam1,
+        'trainMiddle_cam2' : trainMiddle_cam2,
+        'trainMiddle_cam3' : trainMiddle_cam3,
+        'trainMiddle_cam4' : trainMiddle_cam4,
+        'trainMiddle_cam5' : trainMiddle_cam5,
+        'backgroundwhite_cam0' : backgroundwhite_cam0,
+        'backgroundwhite_cam1' : backgroundwhite_cam1,
+        'backgroundwhite_cam2' : backgroundwhite_cam2,
+        'backgroundwhite_cam3' : backgroundwhite_cam3,
+        'backgroundwhite_cam4' : backgroundwhite_cam4,
+        'background_cam0' : background_cam0,
+        'background_cam1' : background_cam1,
+        'background_cam2' : background_cam2,
+        'background_cam3' : background_cam3,
+        'background_cam4' : background_cam4,
+    }
+
+    virtual_grid_points = [(0.1, 0.1), (0.5, 0.1), (0.9, 0.1),
+                           (0.1, 0.5), (0.5, 0.5), (0.9, 0.5),
+                           (0.1, 0.9), (0.5, 0.9), (0.9, 0.9)]
+
+    calibration_results = {}
+    for key, points in image_points.items():
+        integrator.calibrate_camera_view(
+            cam_idx=key,
+            image_points=points,
+            plane_points=virtual_plane_points,
+            reproj_threshold=5.0,
+        )
+        grid_image_points = integrator.transform_virtual_grid_to_image(
+            cam_idx=key,
+            virtual_grid_points=virtual_grid_points,
+            plane_size=(640, 480),
+        )
+        calibration_results[key] = {
+            "homography": integrator.homography_matrices[key],
+            "grid_points": grid_image_points,
+        }
+
+        print(f"\n=== {key} virtual grid points in image ===")
+        for grid_point, image_point in zip(virtual_grid_points, grid_image_points):
+            print(f"{grid_point} -> {image_point}")
+
+    output_path = Path(__file__).with_name("homography_matrix_and_bev_grids.pkl")
+    with output_path.open("wb") as f:
+        pickle.dump(calibration_results, f)
+
+    print(f"\nSaved {len(calibration_results)} calibration results to {output_path}")

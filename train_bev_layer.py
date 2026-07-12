@@ -4,72 +4,113 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
+from data.load_data_for_bev_train import load_data_bev
+from src.dataset import GridBEVDataset, collate_grid_bev_fn
 from src.model.grid_bev_layer import GridToBEVLayer
 
 
-class GridBEVDataset(Dataset):
-    """
-    Placeholder dataset for GridToBEVLayer training.
+def fit_grid_points_to_count(
+    grid_points: torch.Tensor,
+    num_grid_points: int,
+) -> torch.Tensor:
+    grid_points = torch.as_tensor(grid_points, dtype=torch.float32)
+    if grid_points.ndim != 2 or grid_points.shape[1] != 2:
+        raise ValueError(f"grid_points must have shape [N, 2], got {tuple(grid_points.shape)}")
 
-    Expected item format:
-        {
-            "image": Tensor [C, H, W],
-            "grid_points": Tensor [N, 2],  # input-image pixel coords, (x, y)
-            "grid_visible": Tensor [N],    # optional, 1 for valid labeled points
-            "homography": Tensor [3, 3],   # optional diagnostic target
-        }
+    current_count = grid_points.shape[0]
+    if current_count == num_grid_points:
+        return grid_points
+    if current_count > num_grid_points:
+        raise ValueError(
+            f"grid_points has {current_count} points, but model is configured for "
+            f"{num_grid_points}. Set --num-grid-points to match the labels."
+        )
+    if current_count == 0:
+        pad = grid_points.new_zeros(num_grid_points, 2)
+        return pad
 
-    Fill this class later with the real annotation loader.
-    """
-
-    def __len__(self) -> int:
-        return 0
-
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        raise NotImplementedError("Implement GridBEVDataset before training.")
-
-
-def collate_grid_bev_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-    if len(batch) == 0:
-        raise ValueError("batch is empty")
-
-    images = torch.stack([item["image"] for item in batch])
-    grid_points = torch.stack([item["grid_points"] for item in batch])
-
-    if "grid_visible" in batch[0]:
-        grid_visible = torch.stack([item["grid_visible"] for item in batch]).float()
-    else:
-        grid_visible = torch.ones(grid_points.shape[:2], dtype=torch.float32)
-
-    output = {
-        "image": images,
-        "grid_points": grid_points.float(),
-        "grid_visible": grid_visible,
-    }
-
-    if "homography" in batch[0]:
-        output["homography"] = torch.stack([item["homography"] for item in batch]).float()
-
-    return output
+    pad_count = num_grid_points - current_count
+    pad = grid_points[-1:].expand(pad_count, -1)
+    return torch.cat([grid_points, pad], dim=0)
 
 
-def make_train_loader(batch_size: int, num_workers: int) -> DataLoader:
-    """
-    Empty on purpose.
+def fit_grid_visible_to_count(
+    grid_visible: torch.Tensor,
+    num_grid_points: int,
+) -> torch.Tensor:
+    grid_visible = torch.as_tensor(grid_visible, dtype=torch.float32)
+    if grid_visible.ndim != 1:
+        raise ValueError(f"grid_visible must have shape [N], got {tuple(grid_visible.shape)}")
 
-    Replace GridBEVDataset() with your actual dataset implementation once grid
-    annotations are ready.
-    """
+    current_count = grid_visible.shape[0]
+    if current_count == num_grid_points:
+        return grid_visible
+    if current_count > num_grid_points:
+        raise ValueError(
+            f"grid_visible has {current_count} points, but model is configured for "
+            f"{num_grid_points}. Set --num-grid-points to match the labels."
+        )
 
-    dataset = GridBEVDataset()
+    pad_count = num_grid_points - current_count
+    pad = grid_visible.new_zeros(pad_count)
+    return torch.cat([grid_visible, pad], dim=0)
+
+
+def load_bev_training_samples(
+    filepaths_path: str,
+    num_grid_points: int,
+    max_samples: int | None = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+    img_list: list[torch.Tensor] = []
+    grid_list: list[torch.Tensor] = []
+    grid_visible_list: list[torch.Tensor] = []
+
+    with open(filepaths_path, "r") as f:
+        for line in f:
+            if not line.strip():
+                continue
+
+            sample = load_data_bev(line)
+            img_list.append(sample["image"])
+            grid_list.append(fit_grid_points_to_count(sample["grid_points"], num_grid_points))
+            grid_visible_list.append(
+                fit_grid_visible_to_count(sample["grid_visible"], num_grid_points)
+            )
+
+            if max_samples is not None and len(img_list) >= max_samples:
+                break
+
+    if len(img_list) == 0:
+        raise ValueError(f"no BEV training samples were loaded from {filepaths_path}")
+
+    return img_list, grid_list, grid_visible_list
+
+
+def make_train_loader(
+    filepaths_path: str,
+    batch_size: int,
+    num_workers: int,
+    num_grid_points: int,
+    max_samples: int | None = None,
+) -> DataLoader:
+    img_list, grid_list, grid_visible_list = load_bev_training_samples(
+        filepaths_path=filepaths_path,
+        num_grid_points=num_grid_points,
+        max_samples=max_samples,
+    )
+    dataset = GridBEVDataset(
+        img_list=img_list,
+        grid_list=grid_list,
+        grid_visible_list=grid_visible_list,
+    )
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=len(dataset) > 0,
+        shuffle=True,
         num_workers=num_workers,
-        collate_fn=collate_grid_bev_batch,
+        collate_fn=collate_grid_bev_fn,
     )
 
 
@@ -368,6 +409,8 @@ def load_checkpoint(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train GridToBEVLayer.")
+    parser.add_argument("--filepaths", default=os.path.join("data", "filepaths_bev.txt"))
+    parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -391,6 +434,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.num_grid_points < 4:
+        raise ValueError("GridToBEVLayer training requires at least 4 grid points.")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = GridToBEVLayer(
@@ -417,8 +463,11 @@ def main() -> None:
         print(f"loaded checkpoint: {args.weights} (resume from epoch {start_epoch})")
 
     train_loader = make_train_loader(
+        filepaths_path=args.filepaths,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        num_grid_points=args.num_grid_points,
+        max_samples=args.max_samples,
     )
 
     for epoch in range(start_epoch, start_epoch + args.epochs):
