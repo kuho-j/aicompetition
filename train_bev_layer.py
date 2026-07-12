@@ -185,13 +185,16 @@ class GridBEVLayerLoss:
             visible,
             image_size=(img_h, img_w),
         )
-        reprojection_loss = homography_reprojection_loss(
-            homography,
-            bev_grid_points,
-            gt_points_feat,
-            visible,
-            feature_size=(feat_h, feat_w),
-        )
+        if self.weights.reprojection > 0:
+            reprojection_loss = homography_reprojection_loss(
+                homography.detach(),
+                bev_grid_points,
+                gt_points_feat,
+                visible,
+                feature_size=(feat_h, feat_w),
+            )
+        else:
+            reprojection_loss = homography.new_zeros(())
 
         total = (
             self.weights.heatmap * heatmap_loss
@@ -352,6 +355,7 @@ def train_one_epoch(
     device: torch.device,
     epoch: int,
     log_interval: int,
+    grad_clip_norm: float | None,
 ) -> dict[str, float]:
     model.train()
     totals: dict[str, float] = {}
@@ -382,6 +386,8 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        if grad_clip_norm is not None and grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
         optimizer.step()
 
         num_steps += 1
@@ -444,6 +450,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--loss-heatmap", type=float, default=1.0)
     parser.add_argument("--loss-coord", type=float, default=3.0)
     parser.add_argument("--loss-reprojection", type=float, default=0.5)
+    parser.add_argument("--grad-clip-norm", type=float, default=1.0)
     parser.add_argument("--fpn-out-channels", type=int, default=256)
     parser.add_argument("--backbone-width", type=float, default=0.25)
     parser.add_argument("--backbone-depth", type=float, default=0.33)
@@ -499,6 +506,7 @@ def main() -> None:
             device=device,
             epoch=epoch,
             log_interval=args.log_interval,
+            grad_clip_norm=args.grad_clip_norm,
         )
         msg = " ".join(f"{key}={value:.4f}" for key, value in logs.items())
         print(f"[Epoch {epoch}] {msg}")
