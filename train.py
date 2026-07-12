@@ -4,20 +4,14 @@ import os
 from torch.utils.data import DataLoader
 from sklearn.model_selection import KFold
 
-from src.aug import (
-        HOMOGRAPHY_AUG_ALPHA_RANGE,
-        HOMOGRAPHY_AUG_MAX_RETRIES,
-        HOMOGRAPHY_AUG_MIN_VALID_RATIO,
-        HOMOGRAPHY_AUG_PROB,
-        HOMOGRAPHY_AUG_STRICT_ALPHA_RANGE,
-        HOMOGRAPHY_AUG_STRICT_MIN_VALID_RATIO,
-        HOMOGRAPHY_AUG_STRICT_VIEWS,
-        homography_augmentation,
-        load_homography_augmentation_matrices,
-        )
+from src.aug import rotation_augmentation
 from src.dataset import ImageHeatmapDataset, collate_image_heatmap_fn
 from src.loss import shape_heatmap_loss
 from src.model.viewpoint_bev_detection import SingleViewBEVDetector
+
+ROTATION_AUG_PROB = 1.0
+ROTATION_AUG_DEGREE_RANGE = (-15.0, 15.0)
+DEFAULT_AUGMENTATION_WARMUP_EPOCHS = 1
 
 def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints', fold=None):
     os.makedirs(save_dir, exist_ok=True)
@@ -123,7 +117,8 @@ def train_one_epoch(
         loader,
         optimizer,
         device,
-        homography_augmentation_matrices=None,
+        epoch,
+        augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     model.train()
     total_loss = 0
@@ -134,17 +129,12 @@ def train_one_epoch(
     for images, gt_heatmap in loader:
         images = images.to(device)
         gt_heatmap = gt_heatmap.to(device)
-        images = homography_augmentation(
-                images,
-                homography_augmentation_matrices,
-                probability=HOMOGRAPHY_AUG_PROB,
-                max_retries=HOMOGRAPHY_AUG_MAX_RETRIES,
-                alpha_range=HOMOGRAPHY_AUG_ALPHA_RANGE,
-                strict_alpha_range=HOMOGRAPHY_AUG_STRICT_ALPHA_RANGE,
-                min_valid_ratio=HOMOGRAPHY_AUG_MIN_VALID_RATIO,
-                strict_min_valid_ratio=HOMOGRAPHY_AUG_STRICT_MIN_VALID_RATIO,
-                strict_views=HOMOGRAPHY_AUG_STRICT_VIEWS,
-                )
+        if epoch > augmentation_warmup_epochs:
+            images = rotation_augmentation(
+                    images,
+                    probability=ROTATION_AUG_PROB,
+                    degree_range=ROTATION_AUG_DEGREE_RANGE,
+                    )
 
         # forward
         outputs = model(images, return_aux=True)
@@ -280,14 +270,16 @@ def train(
         topk=100,
         score_threshold=0.3,
         center_threshold=0.05,
+        augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     if test_interval < 1:
         raise ValueError('test_interval must be at least 1')
+    if augmentation_warmup_epochs < 0:
+        raise ValueError('augmentation_warmup_epochs must be >= 0')
 
     model.to(device)
 
     start_epoch = 1
-    homography_augmentation_matrices = load_homography_augmentation_matrices()
 
     if bev_weights is not None:
         load_bev_layer_checkpoint(model, bev_weights, device)
@@ -320,7 +312,8 @@ def train(
                 train_loader,
                 optimizer,
                 device,
-                homography_augmentation_matrices=homography_augmentation_matrices,
+                epoch=epoch,
+                augmentation_warmup_epochs=augmentation_warmup_epochs,
                 )
         print(f'[Epoch {epoch}] loss : {loss:.4f}')
         
@@ -356,14 +349,16 @@ def train_k_fold(
         topk=100,
         score_threshold=0.3,
         center_threshold=0.05,
+        augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     if fold_interval < 1:
         raise ValueError('fold_interval must be at least 1')
+    if augmentation_warmup_epochs < 0:
+        raise ValueError('augmentation_warmup_epochs must be >= 0')
 
     model.to(device)
 
     start_epoch = 1
-    homography_augmentation_matrices = load_homography_augmentation_matrices()
 
     if bev_weights is not None:
         load_bev_layer_checkpoint(model, bev_weights, device)
@@ -407,7 +402,8 @@ def train_k_fold(
                 train_loader,
                 optimizer,
                 device,
-                homography_augmentation_matrices=homography_augmentation_matrices,
+                epoch=epoch,
+                augmentation_warmup_epochs=augmentation_warmup_epochs,
                 )
         print(f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}] loss : {loss:.4f}')
 
@@ -465,6 +461,12 @@ def parse_args():
             default=5,
             help='Number of epochs to train before checkpointing/testing and moving to the next fold.',
             )
+    parser.add_argument(
+            '--augmentation-warmup-epochs',
+            type=int,
+            default=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
+            help='Number of initial epochs to train without rotation augmentation.',
+            )
     return parser.parse_args()
 
 def make_data_list(filepath='data/filepaths_img_and_ht.txt'):
@@ -498,6 +500,7 @@ def main(
         num_grid_points=9,
         k_folds=5,
         fold_interval=5,
+        augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     data_list = make_data_list()
 
@@ -522,6 +525,7 @@ def main(
             epochs=epochs,
             n_splits=k_folds,
             fold_interval=fold_interval,
+            augmentation_warmup_epochs=augmentation_warmup_epochs,
             )
 
 if __name__ == '__main__':
@@ -534,5 +538,6 @@ if __name__ == '__main__':
             num_grid_points=args.num_grid_points,
             k_folds=args.k_folds,
             fold_interval=args.fold_interval,
+            augmentation_warmup_epochs=args.augmentation_warmup_epochs,
             )
 
