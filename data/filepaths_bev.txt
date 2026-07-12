@@ -3264,7 +3264,6 @@ trainClose cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/C
 trainClose cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam4_8_13064.jpg
 trainClose cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam5_8_13064.jpg
 trainLong cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam1_10_10337.jpg
-trainLong cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam2_10_10337.jpg
 trainLong cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam3_10_10337.jpg
 trainLong cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam4_10_10337.jpg
 trainLong cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam5_10_10337.jpg
@@ -5414,7 +5413,6 @@ trainLong cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Lo
 trainLong cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam4_4_11230.jpg
 trainLong cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam5_4_11230.jpg
 trainClose cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam1_2_13769.jpg
-trainClose cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam2_2_13769.jpg
 trainClose cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam3_2_13769.jpg
 trainClose cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam4_2_13769.jpg
 trainClose cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam5_2_13769.jpg
@@ -9511,7 +9509,6 @@ trainMiddle cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/
 trainClose cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam1_2_13367.jpg
 trainClose cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam2_2_13367.jpg
 trainClose cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam3_2_13367.jpg
-trainClose cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam4_2_13367.jpg
 trainClose cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam5_2_13367.jpg
 trainLong cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam1_14_10074.jpg
 trainLong cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam2_14_10074.jpg
@@ -11096,7 +11093,6 @@ trainMiddle cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/
 trainMiddle cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam1_2_12435.jpg
 trainMiddle cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam2_2_12435.jpg
 trainMiddle cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam3_2_12435.jpg
-trainMiddle cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam4_2_12435.jpg
 trainMiddle cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam5_2_12435.jpg
 trainClose cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam1_10_12856.jpg
 trainClose cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam2_10_12856.jpg
@@ -19336,7 +19332,6 @@ trainMiddle cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/
 trainMiddle cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam1_14_11680.jpg
 trainMiddle cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam2_14_11680.jpg
 trainMiddle cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam3_14_11680.jpg
-trainMiddle cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam4_14_11680.jpg
 trainMiddle cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam5_14_11680.jpg
 trainMiddle cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam1_13_14035.jpg
 trainMiddle cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam2_13_14035.jpg
@@ -20924,7 +20919,6 @@ trainLong cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Lo
 trainLong cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam4_15_10677.jpg
 trainLong cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam5_15_10677.jpg
 trainClose cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam1_11_12686.jpg
-trainClose cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam2_11_12686.jpg
 trainClose cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam3_11_12686.jpg
 trainClose cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam4_11_12686.jpg
 trainClose cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam5_11_12686.jpg
@@ -22162,7 +22156,6 @@ trainLong cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Lo
 trainLong cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam2_12_10363.jpg
 trainLong cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam3_12_10363.jpg
 trainLong cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam4_12_10363.jpg
-trainLong cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam5_12_10363.jpg
 trainLong cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam1_15_10370.jpg
 trainLong cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam2_15_10370.jpg
 trainLong cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam3_15_10370.jpg
@@ -22399,7 +22392,6 @@ trainMiddle cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/
 trainMiddle cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam4_5_12214.jpg
 trainMiddle cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Middle_CAPP_cam5_5_12214.jpg
 trainLong cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam1_11_10338.jpg
-trainLong cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam2_11_10338.jpg
 trainLong cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam3_11_10338.jpg
 trainLong cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam4_11_10338.jpg
 trainLong cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam5_11_10338.jpg
@@ -22931,7 +22923,6 @@ trainLong cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Lo
 trainClose cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam1_14_13483.jpg
 trainClose cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam2_14_13483.jpg
 trainClose cam3 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam3_14_13483.jpg
-trainClose cam4 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam4_14_13483.jpg
 trainClose cam5 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Close_CAPP_cam5_14_13483.jpg
 trainLong cam1 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam1_15_10159.jpg
 trainLong cam2 /home/aicompetition43/Dataset/1.competition_trainset/1_dataset/Long_CAPP_cam2_15_10159.jpg
