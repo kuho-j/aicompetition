@@ -11,6 +11,7 @@ from src.aug import lighting_augmentation, rotation_augmentation_with_heatmap_ta
 from src.dataset import ImageHeatmapDataset, collate_image_heatmap_fn
 from src.loss import CenterNetDetectionLoss
 from src.model.viewpoint_bev_detection import SingleViewBEVDetector
+from test import ImageHeatmapEvalDataset, collate_image_heatmap_eval_fn, test as run_test
 
 ROTATION_AUG_PROB = 1.0
 ROTATION_AUG_MILD_END_EPOCH = 40
@@ -64,6 +65,7 @@ def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints', fold=None):
         checkpoint['fold'] = fold
 
     torch.save(checkpoint, ckpt_path)
+    return ckpt_path
 
 def load_checkpoint(model, optimizer, ckpt_path, device):
     if not os.path.isfile(ckpt_path):
@@ -304,7 +306,7 @@ def make_k_fold_loaders(
             collate_fn=collate_image_heatmap_fn,
             )
 
-    return train_loader, val_loader
+    return train_loader, val_loader, val_data
 
 def make_train_loaders(
         data_list,
@@ -337,6 +339,57 @@ def make_train_loaders(
             )
 
     return train_loader, test_loader
+
+def make_test_metric_loader(
+        data_list,
+        batch_size=32,
+        num_workers=0,
+        num_classes=60,
+        output_size=(60, 80),
+        ):
+    dataset = ImageHeatmapEvalDataset(
+            data_list,
+            num_classes=num_classes,
+            output_size=output_size,
+            )
+    return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate_image_heatmap_eval_fn,
+            )
+
+def run_interval_test(
+        model,
+        data_list,
+        device,
+        batch_size,
+        num_workers,
+        num_classes,
+        output_size,
+        topk,
+        score_threshold,
+        center_threshold,
+        prefix,
+        ):
+    test_loader = make_test_metric_loader(
+            data_list=data_list,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            num_classes=num_classes,
+            output_size=output_size,
+            )
+    print(f'{prefix} test.py metrics:')
+    return run_test(
+            model=model,
+            loader=test_loader,
+            device=device,
+            topk=topk,
+            score_threshold=score_threshold,
+            center_threshold=center_threshold,
+            print_result=True,
+            )
 
 def train(
         model,
@@ -423,7 +476,8 @@ def train(
         print(f'[Epoch {epoch}] loss : {loss:.4f}')
         
         if epoch % test_interval == 0:
-            save_checkpoint(model, optimizer, epoch)
+            ckpt_path = save_checkpoint(model, optimizer, epoch)
+            print(f'[Epoch {epoch}] saved checkpoint: {ckpt_path}')
 
             val_loss = evaluate_loss(
                     model=model,
@@ -434,6 +488,19 @@ def train(
             print(
                     f'[Epoch {epoch}]',
                     f'val_loss: {val_loss:.4f}'
+                    )
+            run_interval_test(
+                    model=model,
+                    data_list=test_data_list if test_data_list is not None else data_list,
+                    device=device,
+                    batch_size=batch_size,
+                    num_workers=num_workers,
+                    num_classes=num_classes,
+                    output_size=output_size,
+                    topk=topk,
+                    score_threshold=score_threshold,
+                    center_threshold=center_threshold,
+                    prefix=f'[Epoch {epoch}]',
                     )
 
 def train_k_fold(
@@ -498,13 +565,14 @@ def train_k_fold(
     active_fold = None
     train_loader = None
     val_loader = None
+    val_data = None
 
     for epoch in range(start_epoch, start_epoch + epochs):
         fold = ((epoch - 1) // fold_interval) % n_splits
 
         if fold != active_fold:
             active_fold = fold
-            train_loader, val_loader = make_k_fold_loaders(
+            train_loader, val_loader, val_data = make_k_fold_loaders(
                     data_list=data_list,
                     fold=active_fold,
                     n_splits=n_splits,
@@ -533,7 +601,8 @@ def train_k_fold(
         print(f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}] loss : {loss:.4f}')
 
         if epoch % fold_interval == 0:
-            save_checkpoint(model, optimizer, epoch, fold=active_fold + 1)
+            ckpt_path = save_checkpoint(model, optimizer, epoch, fold=active_fold + 1)
+            print(f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}] saved checkpoint: {ckpt_path}')
 
             val_loss = evaluate_loss(
                     model=model,
@@ -544,6 +613,19 @@ def train_k_fold(
             print(
                     f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}]',
                     f'val_loss: {val_loss:.4f}'
+                    )
+            run_interval_test(
+                    model=model,
+                    data_list=val_data,
+                    device=device,
+                    batch_size=batch_size,
+                    num_workers=num_workers,
+                    num_classes=num_classes,
+                    output_size=output_size,
+                    topk=topk,
+                    score_threshold=score_threshold,
+                    center_threshold=center_threshold,
+                    prefix=f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}]',
                     )
 
 def parse_args():
@@ -665,10 +747,40 @@ def parse_args():
             help='Number of epochs to train before checkpointing/testing and moving to the next fold.',
             )
     parser.add_argument(
+            '--batch-size',
+            type=int,
+            default=32,
+            help='Batch size used for training and interval test.py evaluation.',
+            )
+    parser.add_argument(
+            '--num-workers',
+            type=int,
+            default=0,
+            help='Number of DataLoader workers used for training and interval test.py evaluation.',
+            )
+    parser.add_argument(
             '--log-interval',
             type=int,
             default=20,
             help='Number of train steps between progress logs.',
+            )
+    parser.add_argument(
+            '--topk',
+            type=int,
+            default=100,
+            help='Top-k predictions used by interval test.py evaluation.',
+            )
+    parser.add_argument(
+            '--score-threshold',
+            type=float,
+            default=0.3,
+            help='Score threshold used by interval test.py evaluation.',
+            )
+    parser.add_argument(
+            '--center-threshold',
+            type=float,
+            default=0.05,
+            help='Normalized center-distance threshold used by interval test.py evaluation.',
             )
     parser.add_argument(
             '--augmentation-warmup-epochs',
@@ -760,6 +872,11 @@ def main(
         loss_displacement_weight=0.25,
         loss_displacement_radius=4,
         loss_offset_weight=1.0,
+        batch_size=32,
+        num_workers=0,
+        topk=100,
+        score_threshold=0.3,
+        center_threshold=0.05,
         log_interval=20,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
@@ -797,6 +914,11 @@ def main(
                 loss_displacement_weight=loss_displacement_weight,
                 loss_displacement_radius=loss_displacement_radius,
                 loss_offset_weight=loss_offset_weight,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                topk=topk,
+                score_threshold=score_threshold,
+                center_threshold=center_threshold,
                 log_interval=log_interval,
                 augmentation_warmup_epochs=augmentation_warmup_epochs,
                 )
@@ -827,6 +949,11 @@ def main(
                 loss_displacement_weight=loss_displacement_weight,
                 loss_displacement_radius=loss_displacement_radius,
                 loss_offset_weight=loss_offset_weight,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                topk=topk,
+                score_threshold=score_threshold,
+                center_threshold=center_threshold,
                 log_interval=log_interval,
                 augmentation_warmup_epochs=augmentation_warmup_epochs,
                 )
@@ -854,6 +981,11 @@ if __name__ == '__main__':
             loss_displacement_weight=args.loss_displacement_weight,
             loss_displacement_radius=args.loss_displacement_radius,
             loss_offset_weight=args.loss_offset_weight,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            topk=args.topk,
+            score_threshold=args.score_threshold,
+            center_threshold=args.center_threshold,
             log_interval=args.log_interval,
             augmentation_warmup_epochs=args.augmentation_warmup_epochs,
             )
