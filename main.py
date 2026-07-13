@@ -40,6 +40,24 @@ def parse_arg():
         type = str,
     )
     parser.add_argument(
+        '--bev-height',
+        type=int,
+        default=60,
+        help='Height of the BEV feature grid used by the model.'
+    )
+    parser.add_argument(
+        '--bev-width',
+        type=int,
+        default=80,
+        help='Width of the BEV feature grid used by the model.'
+    )
+    parser.add_argument(
+        '--decoder-channels',
+        type=int,
+        default=64,
+        help='Hidden channel width of the BEV heatmap decoder.'
+    )
+    parser.add_argument(
         '--cam1',
         default="/home/aicompetition43/Dataset/4.TestVideo_Sample/cam2/Sample_1.mp4",
         help='Path of a video file of center'
@@ -168,10 +186,16 @@ def main(
     cam4 : str,
     cam5 : str,
     num_classes : int = 60,
+    bev_height : int = 60,
+    bev_width : int = 80,
+    decoder_channels : int = 64,
     ):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = SingleViewBEVDetector().to(device)
+    model = SingleViewBEVDetector(
+        bev_size=(bev_height, bev_width),
+        decoder_channels=decoder_channels,
+    ).to(device)
     load_model(model, model_path, device)
     model.eval()
 
@@ -261,4 +285,7 @@ if __name__ == '__main__':
         cam3=args.cam3,
         cam4=args.cam4,
         cam5=args.cam5,
+        bev_height=args.bev_height,
+        bev_width=args.bev_width,
+        decoder_channels=args.decoder_channels,
     )

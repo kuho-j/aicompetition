@@ -12,8 +12,18 @@ from src.dataset import GridBEVDataset, collate_grid_bev_fn
 from src.model.grid_bev_layer import GridToBEVLayer
 
 
-ROTATION_AUG_START_EPOCH = 50
-ROTATION_AUG_DEGREE_RANGE = (-15.0, 15.0)
+ROTATION_AUG_WARMUP_EPOCHS = 10
+ROTATION_AUG_MILD_END_EPOCH = 40
+ROTATION_AUG_MILD_DEGREE_RANGE = (-5.0, 5.0)
+ROTATION_AUG_STRONG_DEGREE_RANGE = (-15.0, 15.0)
+
+
+def get_rotation_aug_degree_range(epoch: int) -> tuple[float, float] | None:
+    if epoch <= ROTATION_AUG_WARMUP_EPOCHS:
+        return None
+    if epoch <= ROTATION_AUG_MILD_END_EPOCH:
+        return ROTATION_AUG_MILD_DEGREE_RANGE
+    return ROTATION_AUG_STRONG_DEGREE_RANGE
 
 
 def fit_grid_points_to_count(
@@ -123,7 +133,7 @@ def make_train_loader(
 class GridBEVLossWeights:
     heatmap: float = 1.0
     coord: float = 3.0
-    reprojection: float = 0.5
+    reprojection: float = 0.0
 
 
 class GridBEVLayerLoss:
@@ -366,12 +376,13 @@ def train_one_epoch(
 
     for step, batch in enumerate(loader, start=1):
         batch = move_batch_to_device(batch, device)
-        if epoch > ROTATION_AUG_START_EPOCH:
+        rotation_degree_range = get_rotation_aug_degree_range(epoch)
+        if rotation_degree_range is not None:
             images, grid_points, coordinate_valid = rotation_augmentation(
                 batch["image"],
                 coordinates=batch["grid_points"],
                 probability=1.0,
-                degree_range=ROTATION_AUG_DEGREE_RANGE,
+                degree_range=rotation_degree_range,
                 return_coordinate_mask=True,
             )
             batch["image"] = images
@@ -449,13 +460,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heatmap-sigma", type=float, default=1.5)
     parser.add_argument("--loss-heatmap", type=float, default=1.0)
     parser.add_argument("--loss-coord", type=float, default=3.0)
-    parser.add_argument("--loss-reprojection", type=float, default=0.5)
+    parser.add_argument("--loss-reprojection", type=float, default=0.0)
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
     parser.add_argument("--fpn-out-channels", type=int, default=256)
     parser.add_argument("--backbone-width", type=float, default=0.25)
     parser.add_argument("--backbone-depth", type=float, default=0.33)
-    parser.add_argument("--bev-height", type=int, default=192)
-    parser.add_argument("--bev-width", type=int, default=256)
+    parser.add_argument("--bev-height", type=int, default=60)
+    parser.add_argument("--bev-width", type=int, default=80)
     return parser.parse_args()
 
 

@@ -178,7 +178,7 @@ def make_k_fold_loaders(
         fold,
         n_splits=5,
         batch_size=32,
-        num_workers=0,
+        num_workers=4,
         num_classes=60,
         output_size=(60, 80),
         random_state=42,
@@ -450,6 +450,24 @@ def parse_args():
             help='Number of reference grid points used by the trained BEV layer.',
             )
     parser.add_argument(
+            '--bev-height',
+            type=int,
+            default=60,
+            help='Height of the BEV feature grid produced by the BEV layer.',
+            )
+    parser.add_argument(
+            '--bev-width',
+            type=int,
+            default=80,
+            help='Width of the BEV feature grid produced by the BEV layer.',
+            )
+    parser.add_argument(
+            '--decoder-channels',
+            type=int,
+            default=64,
+            help='Hidden channel width of the BEV heatmap decoder.',
+            )
+    parser.add_argument(
             '--k-folds',
             type=int,
             default=5,
@@ -498,6 +516,9 @@ def main(
         bev_weights=None,
         train_bev_layer=False,
         num_grid_points=9,
+        bev_height=60,
+        bev_width=80,
+        decoder_channels=64,
         k_folds=5,
         fold_interval=5,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
@@ -511,8 +532,10 @@ def main(
             fpn_out_channels=256,
             backbone_width=0.25,
             backbone_depth=0.33,
+            bev_size=(bev_height, bev_width),
             heatmap_size=(60, 80),
             num_grid_points=num_grid_points,
+            decoder_channels=decoder_channels,
             ).to(device)
 
     train_k_fold(
@@ -536,6 +559,9 @@ if __name__ == '__main__':
             bev_weights=args.bev_weights,
             train_bev_layer=args.train_bev_layer,
             num_grid_points=args.num_grid_points,
+            bev_height=args.bev_height,
+            bev_width=args.bev_width,
+            decoder_channels=args.decoder_channels,
             k_folds=args.k_folds,
             fold_interval=args.fold_interval,
             augmentation_warmup_epochs=args.augmentation_warmup_epochs,
