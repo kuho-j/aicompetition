@@ -1,4 +1,6 @@
 import os
+import zipfile
+import zlib
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
@@ -268,19 +270,22 @@ class ImageHeatmapDataset(Dataset):
         return torch.from_numpy(img)
 
     def _load_heatmap_targets(self, heatmap_path):
-        with np.load(heatmap_path) as npz:
-            if "heatmap" in npz:
-                heatmap = npz["heatmap"]
-            elif "heatmaps" in npz:
-                heatmap = npz["heatmaps"]
-            elif "arr_0" in npz:
-                heatmap = npz["arr_0"]
-            elif len(npz.files) == 1:
-                heatmap = npz[npz.files[0]]
-            else:
-                raise ValueError(
-                    f"heatmap npz must contain one array or a heatmap key, got keys {npz.files}"
-                )
+        try:
+            with np.load(heatmap_path) as npz:
+                if "heatmap" in npz:
+                    heatmap = npz["heatmap"]
+                elif "heatmaps" in npz:
+                    heatmap = npz["heatmaps"]
+                elif "arr_0" in npz:
+                    heatmap = npz["arr_0"]
+                elif len(npz.files) == 1:
+                    heatmap = npz[npz.files[0]]
+                else:
+                    raise ValueError(
+                        f"heatmap npz must contain one array or a heatmap key, got keys {npz.files}"
+                    )
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, zlib.error) as exc:
+            raise RuntimeError(f"failed to load heatmap npz: {heatmap_path}") from exc
 
         heatmap = torch.as_tensor(heatmap, dtype=torch.float32)
 

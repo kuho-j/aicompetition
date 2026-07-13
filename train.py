@@ -1,6 +1,9 @@
 import argparse
 import torch
 import os
+import zipfile
+import zlib
+import numpy as np
 from torch.utils.data import DataLoader
 from sklearn.model_selection import KFold
 
@@ -649,9 +652,27 @@ def parse_args():
             )
     return parser.parse_args()
 
-def make_data_list(filepath='data/filepaths_img_and_ht.txt'):
+def _validate_heatmap_npz(heatmap_path):
+    with np.load(heatmap_path) as npz:
+        if "heatmap" in npz:
+            _ = npz["heatmap"]
+        elif "heatmaps" in npz:
+            _ = npz["heatmaps"]
+        elif "arr_0" in npz:
+            _ = npz["arr_0"]
+        elif len(npz.files) == 1:
+            _ = npz[npz.files[0]]
+        else:
+            raise ValueError(
+                    f"heatmap npz must contain one array or a heatmap key, got keys {npz.files}"
+                    )
+
+
+def make_data_list(filepath='data/filepaths_img_and_ht.txt', validate_heatmaps=True):
     data_list = []
     skipped_missing_heatmap = 0
+    skipped_invalid_heatmap = 0
+    invalid_heatmap_examples = []
 
     with open(filepath, 'r') as file:
         for line_num, line in enumerate(file, start=1):
@@ -667,6 +688,14 @@ def make_data_list(filepath='data/filepaths_img_and_ht.txt'):
             if not os.path.exists(heatmap_path):
                 skipped_missing_heatmap += 1
                 continue
+            if validate_heatmaps:
+                try:
+                    _validate_heatmap_npz(heatmap_path)
+                except (OSError, ValueError, KeyError, zipfile.BadZipFile, zlib.error) as exc:
+                    skipped_invalid_heatmap += 1
+                    if len(invalid_heatmap_examples) < 20:
+                        invalid_heatmap_examples.append((line_num, heatmap_path, exc))
+                    continue
 
             data_list.append({
                     'image_path': image_path,
@@ -676,6 +705,10 @@ def make_data_list(filepath='data/filepaths_img_and_ht.txt'):
     print(f'loaded samples: {len(data_list)} from {filepath}')
     if skipped_missing_heatmap > 0:
         print(f'skipped samples with missing heatmap npz: {skipped_missing_heatmap}')
+    if skipped_invalid_heatmap > 0:
+        print(f'skipped samples with invalid heatmap npz: {skipped_invalid_heatmap}')
+        for line_num, heatmap_path, exc in invalid_heatmap_examples:
+            print(f'  {filepath}:{line_num}: {heatmap_path} ({type(exc).__name__}: {exc})')
 
     return data_list
 
