@@ -9,36 +9,7 @@ import torch.nn.functional as F
 
 from src.model.viewpoint_bev_detection import SingleViewBEVDetector
 from src.predict import decode_predictions
-
-
-def foo(*model_results):
-    '''
-    input : 5 model result dictionaries, each containing class/classes, centers, confidence/scores
-    output : {class_id: count}
-    '''
-
-    if len(model_results) == 1 and isinstance(model_results[0], (list, tuple)):
-        model_results = tuple(model_results[0])
-
-    output = {}
-    for result in model_results:
-        if result is None:
-            continue
-
-        classes = result.get('class', result.get('classes'))
-        if classes is None:
-            continue
-
-        if torch.is_tensor(classes):
-            classes = classes.detach().cpu().reshape(-1).tolist()
-        elif np.isscalar(classes):
-            classes = [classes]
-
-        for class_id in classes:
-            class_id = int(class_id)
-            output[class_id] = output.get(class_id, 0) + 1
-
-    return output
+from src.postprocess import merge_5_predictions, transform_detections_to_bev
 
 
 names = [
@@ -206,13 +177,25 @@ def evaluate(
 
     outputs = model(img.to(device), viewpoint=viewpoint, return_aux=True, decode=False)
     pred_heatmap = outputs["heatmap"]
+    pred_offset = outputs["offset"]
     decoded = decode_predictions(
         pred_heatmap,
+        offset=pred_offset,
         topk=topk,
         score_threshold=score_threshold,
     )
 
-    class_counts = foo(decoded[:5])
+    if "homography" not in outputs:
+        raise ValueError("model outputs must include homography for BEV postprocessing")
+
+    bev_predictions = transform_detections_to_bev(
+        detections=decoded[:5],
+        homography=outputs["homography"],
+    )
+    class_counts = merge_5_predictions(
+        bev_predictions,
+        score_threshold=score_threshold,
+    )
     item_counts = np.zeros(num_classes, dtype=int)
     for class_id, count in class_counts.items():
         if 0 <= class_id < num_classes:

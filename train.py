@@ -22,6 +22,7 @@ LIGHTING_AUG_MILD_END_EPOCH = 40
 LIGHTING_AUG_MILD_PERCENT_RANGE = (-10.0, 10.0)
 LIGHTING_AUG_STRONG_PERCENT_RANGE = (-20.0, 20.0)
 DEFAULT_AUGMENTATION_WARMUP_EPOCHS = 20
+DEFAULT_NUKKI_FILEPATHS = os.path.join('data', 'filepaths_nukki.txt')
 
 def get_rotation_aug_degree_range(
         epoch: int,
@@ -264,6 +265,7 @@ def evaluate_loss(
 def make_k_fold_loaders(
         data_list,
         fold,
+        extra_train_data_list=None,
         n_splits=5,
         batch_size=32,
         num_workers=4,
@@ -286,6 +288,8 @@ def make_k_fold_loaders(
 
     train_data = [data_list[idx] for idx in train_indices.tolist()]
     val_data = [data_list[idx] for idx in val_indices.tolist()]
+    if extra_train_data_list is not None:
+        train_data = train_data + extra_train_data_list
 
     train_dataset = ImageHeatmapDataset(train_data, num_classes, output_size)
     val_dataset = ImageHeatmapDataset(val_data, num_classes, output_size)
@@ -507,6 +511,7 @@ def train_k_fold(
         model,
         data_list,
         device,
+        extra_train_data_list=None,
         resume_path=None,
         bev_weights=None,
         train_bev_layer=False,
@@ -575,6 +580,7 @@ def train_k_fold(
             train_loader, val_loader, val_data = make_k_fold_loaders(
                     data_list=data_list,
                     fold=active_fold,
+                    extra_train_data_list=extra_train_data_list,
                     n_splits=n_splits,
                     batch_size=batch_size,
                     num_workers=num_workers,
@@ -789,6 +795,11 @@ def parse_args():
             help='Number of initial epochs to train without rotation augmentation. '
                  'After warmup, train uses mild rotation until epoch 40, then strong rotation.',
             )
+    parser.add_argument(
+            '--nukki-filepaths',
+            default=DEFAULT_NUKKI_FILEPATHS,
+            help='Optional image/heatmap filepath list appended only to the training split.',
+            )
     return parser.parse_args()
 
 def _validate_heatmap_npz(heatmap_path):
@@ -851,6 +862,14 @@ def make_data_list(filepath='data/filepaths_img_and_ht.txt', validate_heatmaps=T
 
     return data_list
 
+def make_optional_data_list(filepath, validate_heatmaps=True):
+    if filepath is None:
+        return []
+    if not os.path.isfile(filepath):
+        print(f'optional train-only filepaths not found: {filepath}')
+        return []
+    return make_data_list(filepath=filepath, validate_heatmaps=validate_heatmaps)
+
 def main(
         epochs=50,
         weights=None,
@@ -879,8 +898,10 @@ def main(
         center_threshold=0.05,
         log_interval=20,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
+        nukki_filepaths=DEFAULT_NUKKI_FILEPATHS,
         ):
     data_list = make_data_list()
+    nukkit_data_list = make_optional_data_list(nukki_filepaths)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = SingleViewBEVDetector(
@@ -901,6 +922,7 @@ def main(
                 model,
                 data_list,
                 device,
+                extra_train_data_list=nukki_data_list,
                 resume_path=weights,
                 bev_weights=bev_weights,
                 train_bev_layer=train_bev_layer,
@@ -933,6 +955,12 @@ def main(
                 f'train/test split: train={len(train_data_list)}, '
                 f'test={len(test_data_list)}, test_size={test_size}'
                 )
+        if nukki_data_list:
+            train_data_list = train_data_list + nukki_data_list
+            print(
+                    f'added train-only nukkit samples: {len(nukki_data_list)} '
+                    f'(train={len(train_data_list)}, test={len(test_data_list)})'
+                    )
         train(
                 model,
                 train_data_list,
@@ -988,4 +1016,5 @@ if __name__ == '__main__':
             center_threshold=args.center_threshold,
             log_interval=args.log_interval,
             augmentation_warmup_epochs=args.augmentation_warmup_epochs,
+            nukki_filepaths=args.nukki_filepaths,
             )
