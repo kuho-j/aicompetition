@@ -254,16 +254,3 @@ def shape_heatmap_loss(
     dice = soft_dice_loss(logits.sigmoid(), gt)
     return bce_weight * bce + dice_weight * dice
 
-class MultiViewDetectorLoss(nn.Module):
-    def __init__(self, w_heatmap : float = 1.):
-        super().__init__()
-        self.w_hm = w_heatmap
-
-    def forward(
-            self,
-            pred : torch.Tensor,
-            gt_heatmap : torch.Tensor,
-            center_mask : torch.Tensor,
-        ) -> torch.Tensor:
-        hm_loss = gaussian_focal_loss(pred, gt_heatmap)
-        return hm_loss
