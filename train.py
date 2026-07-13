@@ -49,7 +49,7 @@ def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints', fold=None):
         ckpt_path = os.path.join(save_dir, f'fold_{fold}_epoch_{epoch}.pt')
     '''
     
-    ckpt_path = os.path.join(save_dir, f'feature1_epoch_{epoch}.pt')
+    ckpt_path = os.path.join(save_dir, f'feature2_epoch_{epoch}.pt')
 
     checkpoint = {
         'epoch' : epoch,
