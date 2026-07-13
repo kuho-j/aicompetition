@@ -1,104 +1,114 @@
 import argparse
+import os
 import time
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from data.make_filename import make_filename
-from src.dataset import format_data
+from src.dataset import ImageHeatmapDataset
 from src.model.viewpoint_bev_detection import SingleViewBEVDetector
 from src.predict import decode_predictions
 
 
-class MultiViewEvalDataset(Dataset):
-    def __init__(self, data_list: list[dict[str, torch.Tensor]]):
+class ImageHeatmapEvalDataset(Dataset):
+    def __init__(
+        self,
+        data_list: list[dict[str, str]],
+        num_classes: int,
+        output_size: tuple[int, int],
+    ):
         if len(data_list) == 0:
             raise ValueError("data_list is empty")
-        self.data_list = data_list
+        self.dataset = ImageHeatmapDataset(data_list, num_classes, output_size)
 
     def __len__(self):
-        return len(self.data_list)
+        return len(self.dataset)
 
     def __getitem__(self, idx):
-        sample = self.data_list[idx]
+        sample = self.dataset[idx]
+        classes, centers = targets_to_classes_and_centers(
+            sample["center_mask"],
+            sample["center_offset"],
+        )
+
         return {
-            "images": sample["images"],
-            "classes": sample["classes"],
-            "centers": sample["centers"],
+            "image": sample["image"],
+            "classes": classes,
+            "centers": centers,
         }
 
 
-def collate_eval_fn(batch):
-    image_shapes = [tuple(b["images"].shape) for b in batch]
-    if len(set(image_shapes)) != 1:
-        raise ValueError(f"all image tensors must have the same shape, got {image_shapes}")
-
-    return {
-        "images": torch.stack([b["images"] for b in batch]),
-        "classes": [b["classes"] for b in batch],
-        "centers": [b["centers"] for b in batch],
-    }
-
-
-class SingleViewEvalDataset(Dataset):
-    def __init__(self, data_list: list[dict[str, torch.Tensor]]):
-        if len(data_list) == 0:
-            raise ValueError("data_list is empty")
-        self.data_list = data_list
-        self.samples: list[tuple[int, int]] = []
-
-        for sample_idx, sample in enumerate(data_list):
-            images = sample["images"]
-            if images.ndim != 4:
-                raise ValueError(
-                    f"sample images must have shape [N, C, H, W], got {tuple(images.shape)}"
-                )
-            for view_idx in range(images.shape[0]):
-                self.samples.append((sample_idx, view_idx))
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        sample_idx, view_idx = self.samples[idx]
-        sample = self.data_list[sample_idx]
-        return {
-            "image": sample["images"][view_idx],
-            "view_index": torch.tensor(view_idx, dtype=torch.long),
-            "classes": sample["classes"],
-            "centers": sample["centers"],
-        }
-
-
-def collate_single_view_eval_fn(batch):
+def collate_image_heatmap_eval_fn(batch):
     image_shapes = [tuple(b["image"].shape) for b in batch]
     if len(set(image_shapes)) != 1:
         raise ValueError(f"all image tensors must have the same shape, got {image_shapes}")
 
     return {
         "images": torch.stack([b["image"] for b in batch]),
-        "view_indices": torch.stack([b["view_index"] for b in batch]),
         "classes": [b["classes"] for b in batch],
         "centers": [b["centers"] for b in batch],
     }
 
 
-def make_data_list(filename_path: str, expected_num_views: int = 5):
+def make_data_list(
+    filepath: str = "data/filepaths_img_and_ht.txt",
+    max_samples: int | None = None,
+):
+    if max_samples is not None and max_samples < 1:
+        raise ValueError(f"max_samples must be at least 1, got {max_samples}")
+
     data_list = []
-    skipped = 0
+    skipped_missing = 0
 
-    with open(filename_path, "r") as file:
-        for line in file:
-            filename_info = make_filename(line)
-            sample = format_data(filename_info, expected_num_views=expected_num_views)
-            if sample is None:
-                skipped += 1
+    with open(filepath, "r") as file:
+        for line_num, line in enumerate(file, start=1):
+            if max_samples is not None and len(data_list) >= max_samples:
+                break
+
+            parts = line.strip().split()
+            if len(parts) == 0:
                 continue
-            data_list.append(sample)
+            if len(parts) != 2:
+                raise ValueError(
+                    f"{filepath}:{line_num} must contain image path and heatmap path, "
+                    f"got {line.strip()}"
+                )
 
-    print(f"loaded samples: {len(data_list)}, skipped samples: {skipped}")
+            image_path, heatmap_path = parts
+            if not os.path.exists(image_path) or not os.path.exists(heatmap_path):
+                skipped_missing += 1
+                continue
+            data_list.append(
+                {
+                    "image_path": image_path,
+                    "heatmap_path": heatmap_path,
+                }
+            )
+
+    print(f"loaded samples: {len(data_list)} from {filepath}")
+    if max_samples is not None:
+        print(f"sample limit: {max_samples}")
+    if skipped_missing > 0:
+        print(f"skipped samples with missing image/heatmap files: {skipped_missing}")
     return data_list
+
+
+def targets_to_classes_and_centers(
+    center_mask: torch.Tensor,
+    center_offset: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    positives = center_mask.nonzero(as_tuple=False)
+    if positives.numel() == 0:
+        return torch.empty(0, dtype=torch.long), torch.empty(0, 2)
+
+    _, height, width = center_mask.shape
+    classes = positives[:, 0].long()
+    ys = positives[:, 1]
+    xs = positives[:, 2]
+    centers_x = (xs.float() + center_offset[0, ys, xs]) / width
+    centers_y = (ys.float() + center_offset[1, ys, xs]) / height
+    centers = torch.stack([centers_x, centers_y], dim=1)
+    return classes, centers
 
 
 def load_model_weights(model: torch.nn.Module, checkpoint_path: str, device: torch.device):
@@ -176,15 +186,16 @@ def evaluate(
 
     for batch in loader:
         images = batch["images"].to(device)
-        view_indices = batch.get("view_indices")
-        viewpoint = None
-        if view_indices is not None:
-            viewpoint = F.one_hot(view_indices.to(device), num_classes=5).float()
 
         if device.type == "cuda":
             torch.cuda.synchronize()
         start = time.perf_counter()
-        outputs = model(images, viewpoint=viewpoint, return_aux=True, decode=False)
+        outputs = model(
+            images,
+            return_aux=True,
+            decode=False,
+            use_grid_head=False,
+        )
         pred_heatmap = outputs["heatmap"]
         pred_offset = outputs["offset"]
         if device.type == "cuda":
@@ -224,11 +235,26 @@ def evaluate(
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate SingleViewBEVDetector.")
     parser.add_argument("--weights", required=True, help="Path to model checkpoint.")
-    parser.add_argument("--filename-path", default="data/filename.txt")
+    parser.add_argument(
+        "--filepath",
+        "--filename-path",
+        dest="filepath",
+        default="data/filepaths_img_and_ht.txt",
+        help="Path to image/heatmap pairs. Each line must be: image_path heatmap_path.",
+    )
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--num-views", type=int, default=5)
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Evaluate at most this many existing image/heatmap pairs.",
+    )
     parser.add_argument("--num-classes", type=int, default=60)
+    parser.add_argument("--num-grid-points", type=int, default=9)
+    parser.add_argument("--bev-height", type=int, default=60)
+    parser.add_argument("--bev-width", type=int, default=80)
+    parser.add_argument("--decoder-channels", type=int, default=64)
     parser.add_argument("--center-head-channels", type=int, default=128)
     parser.add_argument("--topk", type=int, default=100)
     parser.add_argument("--score-threshold", type=float, default=0.3)
@@ -246,11 +272,15 @@ def test(
     loader: DataLoader | None = None,
     device: torch.device | None = None,
     weights: str | None = None,
-    filename_path: str = "data/filename.txt",
+    filepath: str = "data/filepaths_img_and_ht.txt",
     batch_size: int = 32,
     num_workers: int = 0,
-    num_views: int = 5,
+    max_samples: int | None = None,
     num_classes: int = 60,
+    num_grid_points: int = 9,
+    bev_height: int = 60,
+    bev_width: int = 80,
+    decoder_channels: int = 64,
     center_head_channels: int = 128,
     topk: int = 100,
     score_threshold: float = 0.3,
@@ -261,11 +291,15 @@ def test(
         args = parse_args()
         return test(
             weights=args.weights,
-            filename_path=args.filename_path,
+            filepath=args.filepath,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
-            num_views=args.num_views,
+            max_samples=args.max_samples,
             num_classes=args.num_classes,
+            num_grid_points=args.num_grid_points,
+            bev_height=args.bev_height,
+            bev_width=args.bev_width,
+            decoder_channels=args.decoder_channels,
             center_head_channels=args.center_head_channels,
             topk=args.topk,
             score_threshold=args.score_threshold,
@@ -277,17 +311,18 @@ def test(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if loader is None:
-        data_list = make_data_list(
-            filename_path,
-            expected_num_views=num_views,
+        data_list = make_data_list(filepath, max_samples=max_samples)
+        dataset = ImageHeatmapEvalDataset(
+            data_list,
+            num_classes=num_classes,
+            output_size=(60, 80),
         )
-        dataset = SingleViewEvalDataset(data_list)
         loader = DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_single_view_eval_fn,
+            collate_fn=collate_image_heatmap_eval_fn,
         )
 
     if model is None:
@@ -297,7 +332,10 @@ def test(
             fpn_out_channels=256,
             backbone_width=0.25,
             backbone_depth=0.33,
+            bev_size=(bev_height, bev_width),
             heatmap_size=(60, 80),
+            num_grid_points=num_grid_points,
+            decoder_channels=decoder_channels,
             center_head_channels=center_head_channels,
         ).to(device)
 
