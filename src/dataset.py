@@ -30,8 +30,30 @@ def render_center_offset(
     return offset
 
 
-def zero_center_offset_from_heatmap(heatmap: torch.Tensor) -> torch.Tensor:
-    return heatmap.new_zeros(2, heatmap.shape[-2], heatmap.shape[-1])
+def center_targets_from_source_heatmap(
+    source_heatmap: torch.Tensor,
+    output_h: int,
+    output_w: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    num_classes, source_h, source_w = source_heatmap.shape
+    center_mask = source_heatmap.new_zeros(num_classes, output_h, output_w)
+    center_offset = source_heatmap.new_zeros(2, output_h, output_w)
+
+    centers = source_heatmap.eq(1.0).nonzero(as_tuple=False)
+    for cls_idx, source_y, source_x in centers:
+        x = source_x.to(dtype=source_heatmap.dtype) * output_w / source_w
+        y = source_y.to(dtype=source_heatmap.dtype) * output_h / source_h
+        ix = int(torch.floor(x).item())
+        iy = int(torch.floor(y).item())
+
+        if not (0 <= ix < output_w and 0 <= iy < output_h):
+            continue
+
+        center_mask[cls_idx, iy, ix] = 1.0
+        center_offset[0, iy, ix] = x - ix
+        center_offset[1, iy, ix] = y - iy
+
+    return center_mask, center_offset
 
 class MultiViewDataset(Dataset):
     '''
@@ -227,13 +249,15 @@ class ImageHeatmapDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data_list[idx]
         image = self._load_image(sample["image_path"])
-        heatmap = self._load_heatmap(sample["heatmap_path"])
+        heatmap, center_mask, center_offset = self._load_heatmap_targets(
+            sample["heatmap_path"]
+        )
 
         return {
             "image": image,
             "heatmap": heatmap,
-            "center_mask": heatmap.eq(1.0).float(),
-            "center_offset": zero_center_offset_from_heatmap(heatmap),
+            "center_mask": center_mask,
+            "center_offset": center_offset,
         }
 
     @staticmethod
@@ -243,7 +267,7 @@ class ImageHeatmapDataset(Dataset):
         img = np.transpose(img, (2, 0, 1))
         return torch.from_numpy(img)
 
-    def _load_heatmap(self, heatmap_path):
+    def _load_heatmap_targets(self, heatmap_path):
         with np.load(heatmap_path) as npz:
             if "heatmap" in npz:
                 heatmap = npz["heatmap"]
@@ -266,14 +290,21 @@ class ImageHeatmapDataset(Dataset):
             raise ValueError(f"heatmap must have shape [C, H, W] or [H, W, C], got {tuple(heatmap.shape)}")
         if heatmap.shape[0] != self.num_classes and heatmap.shape[-1] == self.num_classes:
             heatmap = heatmap.permute(2, 0, 1)
+        center_mask, center_offset = center_targets_from_source_heatmap(
+            heatmap,
+            self.output_h,
+            self.output_w,
+        )
         heatmap = self._resize_heatmap(heatmap)
         if heatmap.shape != (self.num_classes, self.output_h, self.output_w):
             raise ValueError(
                 f"heatmap must have shape {(self.num_classes, self.output_h, self.output_w)}, "
                 f"got {tuple(heatmap.shape)}"
             )
+        if center_mask.sum() == 0:
+            center_mask = heatmap.eq(1.0).float()
 
-        return heatmap
+        return heatmap, center_mask, center_offset
 
     def _resize_heatmap(self, heatmap):
         _, heatmap_h, heatmap_w = heatmap.shape
