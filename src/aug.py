@@ -182,6 +182,33 @@ def points_in_image_mask(points: torch.Tensor, image_h: int, image_w: int) -> to
     )
 
 
+def scale_homography(
+    homography: torch.Tensor,
+    source_h: int,
+    source_w: int,
+    target_h: int,
+    target_w: int,
+) -> torch.Tensor:
+    """
+    Convert a homography from one same-frame resolution to another.
+
+    The input homography maps source-resolution coordinates to augmented
+    source-resolution coordinates. The returned homography maps target-resolution
+    coordinates to augmented target-resolution coordinates.
+    """
+    device = homography.device
+    dtype = homography.dtype
+    source_to_target = torch.eye(3, device=device, dtype=dtype)
+    target_to_source = torch.eye(3, device=device, dtype=dtype)
+
+    source_to_target[0, 0] = (target_w - 1) / max(source_w - 1, 1)
+    source_to_target[1, 1] = (target_h - 1) / max(source_h - 1, 1)
+    target_to_source[0, 0] = (source_w - 1) / max(target_w - 1, 1)
+    target_to_source[1, 1] = (source_h - 1) / max(target_h - 1, 1)
+
+    return source_to_target @ homography @ target_to_source
+
+
 def _clone_coordinates(coordinates: Any) -> Any:
     if coordinates is None:
         return None
@@ -641,3 +668,127 @@ def rotation_augmentation(
         outputs.append(applied_homographies)
 
     return outputs[0] if len(outputs) == 1 else tuple(outputs)
+
+
+def _rebuild_center_targets_after_homography(
+    center_mask: torch.Tensor,
+    center_offset: torch.Tensor,
+    homographies: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    batch_size, num_classes, height, width = center_mask.shape
+    rebuilt_mask = center_mask.new_zeros(center_mask.shape)
+    rebuilt_offset = center_mask.new_zeros(batch_size, 2, height, width)
+
+    for batch_idx in range(batch_size):
+        positives = center_mask[batch_idx].nonzero(as_tuple=False)
+        if positives.numel() == 0:
+            continue
+
+        class_indices = positives[:, 0]
+        y_indices = positives[:, 1]
+        x_indices = positives[:, 2]
+        y = y_indices.to(dtype=center_mask.dtype)
+        x = x_indices.to(dtype=center_mask.dtype)
+        x = x + center_offset[batch_idx, 0, y_indices, x_indices].to(dtype=center_mask.dtype)
+        y = y + center_offset[batch_idx, 1, y_indices, x_indices].to(dtype=center_mask.dtype)
+        points = torch.stack([x, y], dim=1)
+        transformed = transform_points_by_homography(points, homographies[batch_idx])
+        valid = points_in_image_mask(transformed, height, width)
+
+        for cls_idx, point in zip(class_indices[valid], transformed[valid]):
+            tx, ty = point
+            ix = int(torch.floor(tx).item())
+            iy = int(torch.floor(ty).item())
+            if not (0 <= ix < width and 0 <= iy < height):
+                continue
+            rebuilt_mask[batch_idx, cls_idx, iy, ix] = 1.0
+            rebuilt_offset[batch_idx, 0, iy, ix] = tx - ix
+            rebuilt_offset[batch_idx, 1, iy, ix] = ty - iy
+
+    return rebuilt_mask, rebuilt_offset
+
+
+def rotation_augmentation_with_heatmap_targets(
+    images: torch.Tensor,
+    heatmaps: torch.Tensor,
+    center_mask: torch.Tensor,
+    center_offset: torch.Tensor,
+    probability: float = ROTATION_AUG_PROB,
+    degree_range: tuple[float, float] = ROTATION_AUG_DEGREE_RANGE,
+    augmentation_strength: float | None = None,
+    image_padding_mode: str = "reflection",
+    heatmap_padding_mode: str = "zeros",
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Rotate images and image-space heatmap labels with the same sampled transform.
+
+    Images and heatmaps may have different spatial sizes as long as they describe
+    the same frame/aspect ratio. The image homography is scaled into heatmap
+    coordinates before warping labels and rebuilding CenterNet center targets.
+    """
+    if images.ndim != 4:
+        raise ValueError(f"Expected images with shape [B, C, H, W], got {tuple(images.shape)}")
+    if heatmaps.ndim != 4:
+        raise ValueError(f"Expected heatmaps with shape [B, C, H, W], got {tuple(heatmaps.shape)}")
+    if center_mask.ndim != 4:
+        raise ValueError(f"Expected center_mask with shape [B, C, H, W], got {tuple(center_mask.shape)}")
+    if center_offset.ndim != 4 or center_offset.shape[1] != 2:
+        raise ValueError(f"Expected center_offset with shape [B, 2, H, W], got {tuple(center_offset.shape)}")
+
+    augmented_images, image_homographies = rotation_augmentation(
+        images,
+        probability=probability,
+        degree_range=degree_range,
+        augmentation_strength=augmentation_strength,
+        padding_mode=image_padding_mode,
+        return_applied_homographies=True,
+    )
+
+    image_h, image_w = images.shape[-2:]
+    heatmap_h, heatmap_w = heatmaps.shape[-2:]
+    if image_h * heatmap_w != image_w * heatmap_h:
+        raise ValueError(
+            "image and heatmap aspect ratios must match for shared rotation "
+            f"augmentation, got image {(image_h, image_w)} and heatmap {(heatmap_h, heatmap_w)}"
+        )
+
+    heatmap_homographies = torch.stack(
+        [
+            scale_homography(
+                homography,
+                image_h,
+                image_w,
+                heatmap_h,
+                heatmap_w,
+            )
+            for homography in image_homographies
+        ],
+        dim=0,
+    )
+
+    augmented_heatmaps = heatmaps.clone()
+    for batch_idx, homography in enumerate(heatmap_homographies):
+        grid = make_homography_sampling_grid(
+            homography,
+            heatmap_h,
+            heatmap_w,
+            heatmaps.device,
+            heatmaps.dtype,
+        )
+        augmented_heatmaps[batch_idx] = F.grid_sample(
+            heatmaps[batch_idx].unsqueeze(0),
+            grid.unsqueeze(0),
+            mode="bilinear",
+            padding_mode=heatmap_padding_mode,
+            align_corners=True,
+        ).squeeze(0)
+
+    augmented_center_mask, augmented_center_offset = _rebuild_center_targets_after_homography(
+        center_mask,
+        center_offset,
+        heatmap_homographies,
+    )
+    peak_mask = augmented_center_mask.to(dtype=torch.bool)
+    augmented_heatmaps = augmented_heatmaps.masked_fill(peak_mask, 1.0)
+
+    return augmented_images, augmented_heatmaps, augmented_center_mask, augmented_center_offset

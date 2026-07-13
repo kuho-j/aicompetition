@@ -4,7 +4,7 @@ import os
 from torch.utils.data import DataLoader
 from sklearn.model_selection import KFold
 
-from src.aug import rotation_augmentation
+from src.aug import rotation_augmentation_with_heatmap_targets
 from src.dataset import ImageHeatmapDataset, collate_image_heatmap_fn
 from src.loss import CenterNetDetectionLoss
 from src.model.viewpoint_bev_detection import SingleViewBEVDetector
@@ -149,6 +149,7 @@ def train_one_epoch(
         optimizer,
         device,
         epoch,
+        log_interval=20,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     model.train()
@@ -157,7 +158,7 @@ def train_one_epoch(
     if len(loader) == 0:
         raise ValueError('train loader is empty')
 
-    for images, gt_heatmap, center_mask, center_offset in loader:
+    for step, (images, gt_heatmap, center_mask, center_offset) in enumerate(loader, start=1):
         images = images.to(device)
         gt_heatmap = gt_heatmap.to(device)
         center_mask = center_mask.to(device)
@@ -167,8 +168,11 @@ def train_one_epoch(
                 warmup_epochs=augmentation_warmup_epochs,
                 )
         if rotation_degree_range is not None:
-            images = rotation_augmentation(
+            images, gt_heatmap, center_mask, center_offset = rotation_augmentation_with_heatmap_targets(
                     images,
+                    gt_heatmap,
+                    center_mask,
+                    center_offset,
                     probability=ROTATION_AUG_PROB,
                     degree_range=rotation_degree_range,
                     )
@@ -191,6 +195,9 @@ def train_one_epoch(
         optimizer.step()
 
         total_loss += loss.item()
+
+        if step % log_interval == 0:
+            print(f'[Epoch {epoch}][Step {step}/{len(loader)}] loss={loss.item():.4f}')
     
     return total_loss / len(loader)
 
@@ -327,10 +334,13 @@ def train(
         loss_displacement_weight=0.25,
         loss_displacement_radius=4,
         loss_offset_weight=1.0,
+        log_interval=20,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     if test_interval < 1:
         raise ValueError('test_interval must be at least 1')
+    if log_interval < 1:
+        raise ValueError('log_interval must be at least 1')
     if augmentation_warmup_epochs < 0:
         raise ValueError('augmentation_warmup_epochs must be >= 0')
 
@@ -378,6 +388,7 @@ def train(
                 optimizer,
                 device,
                 epoch=epoch,
+                log_interval=log_interval,
                 augmentation_warmup_epochs=augmentation_warmup_epochs,
                 )
         print(f'[Epoch {epoch}] loss : {loss:.4f}')
@@ -420,10 +431,13 @@ def train_k_fold(
         loss_displacement_weight=0.25,
         loss_displacement_radius=4,
         loss_offset_weight=1.0,
+        log_interval=20,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     if fold_interval < 1:
         raise ValueError('fold_interval must be at least 1')
+    if log_interval < 1:
+        raise ValueError('log_interval must be at least 1')
     if augmentation_warmup_epochs < 0:
         raise ValueError('augmentation_warmup_epochs must be >= 0')
 
@@ -482,6 +496,7 @@ def train_k_fold(
                 optimizer,
                 device,
                 epoch=epoch,
+                log_interval=log_interval,
                 augmentation_warmup_epochs=augmentation_warmup_epochs,
                 )
         print(f'[Epoch {epoch}][Fold {active_fold + 1}/{n_splits}] loss : {loss:.4f}')
@@ -596,6 +611,12 @@ def parse_args():
             help='Number of epochs to train before checkpointing/testing and moving to the next fold.',
             )
     parser.add_argument(
+            '--log-interval',
+            type=int,
+            default=20,
+            help='Number of train steps between progress logs.',
+            )
+    parser.add_argument(
             '--augmentation-warmup-epochs',
             type=int,
             default=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
@@ -651,6 +672,7 @@ def main(
         loss_displacement_weight=0.25,
         loss_displacement_radius=4,
         loss_offset_weight=1.0,
+        log_interval=20,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     data_list = make_data_list()
@@ -684,6 +706,7 @@ def main(
             loss_displacement_weight=loss_displacement_weight,
             loss_displacement_radius=loss_displacement_radius,
             loss_offset_weight=loss_offset_weight,
+            log_interval=log_interval,
             augmentation_warmup_epochs=augmentation_warmup_epochs,
             )
 
@@ -706,5 +729,6 @@ if __name__ == '__main__':
             loss_displacement_weight=args.loss_displacement_weight,
             loss_displacement_radius=args.loss_displacement_radius,
             loss_offset_weight=args.loss_offset_weight,
+            log_interval=args.log_interval,
             augmentation_warmup_epochs=args.augmentation_warmup_epochs,
             )
