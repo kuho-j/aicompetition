@@ -16,6 +16,8 @@ HOMOGRAPHY_AUG_STRICT_MIN_VALID_RATIO = 0.78
 HOMOGRAPHY_AUG_STRICT_VIEWS = {1, 3}
 ROTATION_AUG_PROB = 0.35
 ROTATION_AUG_DEGREE_RANGE = (-5.0, 5.0)
+LIGHTING_AUG_PROB = 0.35
+LIGHTING_AUG_PERCENT_RANGE = (-10.0, 10.0)
 
 
 def load_homography_augmentation_matrices(
@@ -668,6 +670,59 @@ def rotation_augmentation(
         outputs.append(applied_homographies)
 
     return outputs[0] if len(outputs) == 1 else tuple(outputs)
+
+
+def lighting_augmentation(
+    images: torch.Tensor,
+    probability: float = LIGHTING_AUG_PROB,
+    percent_range: tuple[float, float] = LIGHTING_AUG_PERCENT_RANGE,
+    augmentation_strength: float | None = None,
+) -> torch.Tensor:
+    """
+    Randomly brighten or darken images by a per-sample percentage.
+
+    Images are expected to be float tensors in [0, 1]. A sampled value of -10
+    multiplies the image by 0.9, and +10 multiplies it by 1.1.
+    """
+    if probability <= 0:
+        return images
+    if images.ndim not in (4, 5):
+        raise ValueError(
+            f"Expected images with shape [B, C, H, W] or [B, V, C, H, W], got {tuple(images.shape)}"
+        )
+
+    percent_min, percent_max = percent_range
+    if augmentation_strength is not None:
+        if augmentation_strength < 0:
+            raise ValueError(f"augmentation_strength must be >= 0, got {augmentation_strength}")
+        percent_min *= augmentation_strength
+        percent_max *= augmentation_strength
+
+    if percent_min > percent_max:
+        raise ValueError(f"Expected percent_range as min <= max, got {(percent_min, percent_max)}")
+
+    is_multiview = images.ndim == 5
+    batch_size = images.shape[0]
+    num_views = images.shape[1] if is_multiview else 1
+    augmented = images.clone()
+
+    for batch_idx in range(batch_size):
+        for view_idx in range(num_views):
+            if torch.rand((), device=images.device).item() >= probability:
+                continue
+
+            percent = (
+                percent_min
+                + torch.rand((), device=images.device).item()
+                * (percent_max - percent_min)
+            )
+            factor = 1.0 + percent / 100.0
+            if is_multiview:
+                augmented[batch_idx, view_idx] = (images[batch_idx, view_idx] * factor).clamp(0.0, 1.0)
+            else:
+                augmented[batch_idx] = (images[batch_idx] * factor).clamp(0.0, 1.0)
+
+    return augmented
 
 
 def _rebuild_center_targets_after_homography(

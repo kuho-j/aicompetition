@@ -4,7 +4,7 @@ import os
 from torch.utils.data import DataLoader
 from sklearn.model_selection import KFold
 
-from src.aug import rotation_augmentation_with_heatmap_targets
+from src.aug import lighting_augmentation, rotation_augmentation_with_heatmap_targets
 from src.dataset import ImageHeatmapDataset, collate_image_heatmap_fn
 from src.loss import CenterNetDetectionLoss
 from src.model.viewpoint_bev_detection import SingleViewBEVDetector
@@ -13,6 +13,10 @@ ROTATION_AUG_PROB = 1.0
 ROTATION_AUG_MILD_END_EPOCH = 40
 ROTATION_AUG_MILD_DEGREE_RANGE = (-5.0, 5.0)
 ROTATION_AUG_STRONG_DEGREE_RANGE = (-15.0, 15.0)
+LIGHTING_AUG_PROB = 1.0
+LIGHTING_AUG_MILD_END_EPOCH = 40
+LIGHTING_AUG_MILD_PERCENT_RANGE = (-10.0, 10.0)
+LIGHTING_AUG_STRONG_PERCENT_RANGE = (-20.0, 20.0)
 DEFAULT_AUGMENTATION_WARMUP_EPOCHS = 10
 
 def get_rotation_aug_degree_range(
@@ -24,6 +28,16 @@ def get_rotation_aug_degree_range(
     if epoch <= ROTATION_AUG_MILD_END_EPOCH:
         return ROTATION_AUG_MILD_DEGREE_RANGE
     return ROTATION_AUG_STRONG_DEGREE_RANGE
+
+def get_lighting_aug_percent_range(
+        epoch: int,
+        warmup_epochs: int = DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
+        ) -> tuple[float, float] | None:
+    if epoch <= warmup_epochs:
+        return None
+    if epoch <= LIGHTING_AUG_MILD_END_EPOCH:
+        return LIGHTING_AUG_MILD_PERCENT_RANGE
+    return LIGHTING_AUG_STRONG_PERCENT_RANGE
 
 def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints', fold=None):
     os.makedirs(save_dir, exist_ok=True)
@@ -167,6 +181,10 @@ def train_one_epoch(
                 epoch,
                 warmup_epochs=augmentation_warmup_epochs,
                 )
+        lighting_percent_range = get_lighting_aug_percent_range(
+                epoch,
+                warmup_epochs=augmentation_warmup_epochs,
+                )
         if rotation_degree_range is not None:
             images, gt_heatmap, center_mask, center_offset = rotation_augmentation_with_heatmap_targets(
                     images,
@@ -175,6 +193,12 @@ def train_one_epoch(
                     center_offset,
                     probability=ROTATION_AUG_PROB,
                     degree_range=rotation_degree_range,
+                    )
+        if lighting_percent_range is not None:
+            images = lighting_augmentation(
+                    images,
+                    probability=LIGHTING_AUG_PROB,
+                    percent_range=lighting_percent_range,
                     )
 
         # forward
