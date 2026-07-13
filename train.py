@@ -5,7 +5,7 @@ import zipfile
 import zlib
 import numpy as np
 from torch.utils.data import DataLoader
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
 
 from src.aug import lighting_augmentation, rotation_augmentation_with_heatmap_targets
 from src.dataset import ImageHeatmapDataset, collate_image_heatmap_fn
@@ -642,6 +642,23 @@ def parse_args():
             help='Number of folds for k-fold validation.',
             )
     parser.add_argument(
+            '--no-k-fold',
+            action='store_true',
+            help='Disable k-fold validation and use a single train/test split.',
+            )
+    parser.add_argument(
+            '--test-size',
+            type=float,
+            default=0.2,
+            help='Test split ratio used with --no-k-fold.',
+            )
+    parser.add_argument(
+            '--split-random-state',
+            type=int,
+            default=42,
+            help='Random seed for k-fold and train/test splitting.',
+            )
+    parser.add_argument(
             '--fold-interval',
             type=int,
             default=5,
@@ -733,6 +750,9 @@ def main(
         decoder_channels=64,
         center_head_channels=128,
         k_folds=5,
+        use_k_fold=True,
+        test_size=0.2,
+        split_random_state=42,
         fold_interval=5,
         loss_miss_weight=1.0,
         loss_false_positive_weight=0.05,
@@ -759,25 +779,57 @@ def main(
             center_head_channels=center_head_channels,
             ).to(device)
 
-    train_k_fold(
-            model,
-            data_list,
-            device,
-            resume_path=weights,
-            bev_weights=bev_weights,
-            train_bev_layer=train_bev_layer,
-            epochs=epochs,
-            n_splits=k_folds,
-            fold_interval=fold_interval,
-            loss_miss_weight=loss_miss_weight,
-            loss_false_positive_weight=loss_false_positive_weight,
-            loss_empty_confidence_weight=loss_empty_confidence_weight,
-            loss_displacement_weight=loss_displacement_weight,
-            loss_displacement_radius=loss_displacement_radius,
-            loss_offset_weight=loss_offset_weight,
-            log_interval=log_interval,
-            augmentation_warmup_epochs=augmentation_warmup_epochs,
-            )
+    if use_k_fold:
+        train_k_fold(
+                model,
+                data_list,
+                device,
+                resume_path=weights,
+                bev_weights=bev_weights,
+                train_bev_layer=train_bev_layer,
+                epochs=epochs,
+                n_splits=k_folds,
+                fold_interval=fold_interval,
+                random_state=split_random_state,
+                loss_miss_weight=loss_miss_weight,
+                loss_false_positive_weight=loss_false_positive_weight,
+                loss_empty_confidence_weight=loss_empty_confidence_weight,
+                loss_displacement_weight=loss_displacement_weight,
+                loss_displacement_radius=loss_displacement_radius,
+                loss_offset_weight=loss_offset_weight,
+                log_interval=log_interval,
+                augmentation_warmup_epochs=augmentation_warmup_epochs,
+                )
+    else:
+        train_data_list, test_data_list = train_test_split(
+                data_list,
+                test_size=test_size,
+                shuffle=True,
+                random_state=split_random_state,
+                )
+        print(
+                f'train/test split: train={len(train_data_list)}, '
+                f'test={len(test_data_list)}, test_size={test_size}'
+                )
+        train(
+                model,
+                train_data_list,
+                device,
+                resume_path=weights,
+                bev_weights=bev_weights,
+                train_bev_layer=train_bev_layer,
+                epochs=epochs,
+                test_data_list=test_data_list,
+                test_interval=fold_interval,
+                loss_miss_weight=loss_miss_weight,
+                loss_false_positive_weight=loss_false_positive_weight,
+                loss_empty_confidence_weight=loss_empty_confidence_weight,
+                loss_displacement_weight=loss_displacement_weight,
+                loss_displacement_radius=loss_displacement_radius,
+                loss_offset_weight=loss_offset_weight,
+                log_interval=log_interval,
+                augmentation_warmup_epochs=augmentation_warmup_epochs,
+                )
 
 if __name__ == '__main__':
     args = parse_args()
@@ -792,6 +844,9 @@ if __name__ == '__main__':
             decoder_channels=args.decoder_channels,
             center_head_channels=args.center_head_channels,
             k_folds=args.k_folds,
+            use_k_fold=not args.no_k_fold,
+            test_size=args.test_size,
+            split_random_state=args.split_random_state,
             fold_interval=args.fold_interval,
             loss_miss_weight=args.loss_miss_weight,
             loss_false_positive_weight=args.loss_false_positive_weight,
