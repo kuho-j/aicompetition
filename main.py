@@ -174,7 +174,8 @@ def evaluate(
     view_indices = torch.arange(img.shape[0], device=device).clamp(max=4)
     viewpoint = F.one_hot(view_indices, num_classes=5).float()
 
-    pred_heatmap = model(img.to(device), viewpoint=viewpoint)
+    outputs = model(img.to(device), viewpoint=viewpoint, return_aux=True, decode=False)
+    pred_heatmap = outputs["heatmap"]
     pred_heatmap = pred_heatmap.amax(dim=0, keepdim=True)
     decoded = decode_predictions(
         pred_heatmap,

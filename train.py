@@ -10,8 +10,20 @@ from src.loss import CenterNetDetectionLoss
 from src.model.viewpoint_bev_detection import SingleViewBEVDetector
 
 ROTATION_AUG_PROB = 1.0
-ROTATION_AUG_DEGREE_RANGE = (-15.0, 15.0)
-DEFAULT_AUGMENTATION_WARMUP_EPOCHS = 1
+ROTATION_AUG_MILD_END_EPOCH = 40
+ROTATION_AUG_MILD_DEGREE_RANGE = (-5.0, 5.0)
+ROTATION_AUG_STRONG_DEGREE_RANGE = (-15.0, 15.0)
+DEFAULT_AUGMENTATION_WARMUP_EPOCHS = 10
+
+def get_rotation_aug_degree_range(
+        epoch: int,
+        warmup_epochs: int = DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
+        ) -> tuple[float, float] | None:
+    if epoch <= warmup_epochs:
+        return None
+    if epoch <= ROTATION_AUG_MILD_END_EPOCH:
+        return ROTATION_AUG_MILD_DEGREE_RANGE
+    return ROTATION_AUG_STRONG_DEGREE_RANGE
 
 def save_checkpoint(model, optimizer, epoch, save_dir='checkpoints', fold=None):
     os.makedirs(save_dir, exist_ok=True)
@@ -101,8 +113,18 @@ def load_bev_layer_checkpoint(model, ckpt_path, device, strict=False):
             }
     if prefixed:
         state_dict = prefixed
+    state_dict = {
+            key: value
+            for key, value in state_dict.items()
+            if not key.startswith('center_head.')
+            }
 
     missing, unexpected = model.grid_to_bev.load_state_dict(state_dict, strict=strict)
+    missing = [
+            key
+            for key in missing
+            if not key.startswith('center_head.')
+            ]
     print(f'loaded BEV layer checkpoint: {ckpt_path}')
     if missing:
         print(f'BEV layer missing keys: {missing}')
@@ -140,15 +162,19 @@ def train_one_epoch(
         gt_heatmap = gt_heatmap.to(device)
         center_mask = center_mask.to(device)
         center_offset = center_offset.to(device)
-        if epoch > augmentation_warmup_epochs:
+        rotation_degree_range = get_rotation_aug_degree_range(
+                epoch,
+                warmup_epochs=augmentation_warmup_epochs,
+                )
+        if rotation_degree_range is not None:
             images = rotation_augmentation(
                     images,
                     probability=ROTATION_AUG_PROB,
-                    degree_range=ROTATION_AUG_DEGREE_RANGE,
+                    degree_range=rotation_degree_range,
                     )
 
         # forward
-        outputs = model(images, return_aux=True)
+        outputs = model(images, return_aux=True, decode=False, use_grid_head=False)
 
         # loss
         loss = criterion(
@@ -187,7 +213,7 @@ def evaluate_loss(
         center_mask = center_mask.to(device)
         center_offset = center_offset.to(device)
 
-        outputs = model(images, return_aux=True)
+        outputs = model(images, return_aux=True, decode=False, use_grid_head=False)
         loss = criterion(
                 outputs["heatmap_logits"],
                 gt_heatmap,
@@ -573,12 +599,14 @@ def parse_args():
             '--augmentation-warmup-epochs',
             type=int,
             default=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
-            help='Number of initial epochs to train without rotation augmentation.',
+            help='Number of initial epochs to train without rotation augmentation. '
+                 'After warmup, train uses mild rotation until epoch 40, then strong rotation.',
             )
     return parser.parse_args()
 
 def make_data_list(filepath='data/filepaths_img_and_ht.txt'):
     data_list = []
+    skipped_missing_heatmap = 0
 
     with open(filepath, 'r') as file:
         for line_num, line in enumerate(file, start=1):
@@ -591,12 +619,18 @@ def make_data_list(filepath='data/filepaths_img_and_ht.txt'):
                         )
 
             image_path, heatmap_path = parts
+            if not os.path.exists(heatmap_path):
+                skipped_missing_heatmap += 1
+                continue
+
             data_list.append({
                     'image_path': image_path,
                     'heatmap_path': heatmap_path,
                     })
 
     print(f'loaded samples: {len(data_list)} from {filepath}')
+    if skipped_missing_heatmap > 0:
+        print(f'skipped samples with missing heatmap npz: {skipped_missing_heatmap}')
 
     return data_list
 

@@ -184,7 +184,7 @@ def evaluate(
         if device.type == "cuda":
             torch.cuda.synchronize()
         start = time.perf_counter()
-        outputs = model(images, viewpoint=viewpoint, return_aux=True)
+        outputs = model(images, viewpoint=viewpoint, return_aux=True, decode=False)
         pred_heatmap = outputs["heatmap"]
         pred_offset = outputs["offset"]
         if device.type == "cuda":

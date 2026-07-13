@@ -42,10 +42,10 @@ class GridToBEVLayer(nn.Module):
         homography_point_mask: [B, N], points used for homography estimation
         homography: [B, 3, 3], mapping BEV normalized coords to feature normalized coords
         grid_logits: [B, N, feat_h, feat_w]
-        image_center_logits: [B, C_cls, feat_h, feat_w]
-        image_center_offset: [B, 2, feat_h, feat_w]
-        bev_center_logits: [B, C_cls, bev_h, bev_w]
-        bev_center_offset: [B, 2, bev_h, bev_w]
+        image_center_logits: [B, C_cls, feat_h, feat_w], before homography
+        image_center_offset: [B, 2, feat_h, feat_w], before homography
+        bev_center_logits: [B, C_cls, bev_h, bev_w], only when warp_center=True
+        bev_center_offset: [B, 2, bev_h, bev_w], only when warp_center=True
     """
 
     def __init__(
@@ -109,6 +109,9 @@ class GridToBEVLayer(nn.Module):
         self,
         image: torch.Tensor,
         return_center: bool = True,
+        use_grid_head: bool = True,
+        homography: torch.Tensor | None = None,
+        warp_center: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
         image:
@@ -118,11 +121,28 @@ class GridToBEVLayer(nn.Module):
 
         if self.freeze_geometry:
             with torch.no_grad():
-                geometry_outputs = self._forward_geometry(image)
-            image_feature = geometry_outputs["image_feature"].detach()
+                image_feature = self._forward_image_feature(image)
+                geometry_outputs = self._forward_geometry(
+                    image,
+                    image_feature,
+                    use_grid_head=use_grid_head,
+                    homography=homography,
+                    warp_feature=use_grid_head or homography is not None,
+                )
+            image_feature = image_feature.detach()
+            geometry_outputs = {
+                key: value.detach() if torch.is_tensor(value) else value
+                for key, value in geometry_outputs.items()
+            }
         else:
-            geometry_outputs = self._forward_geometry(image)
-            image_feature = geometry_outputs["image_feature"]
+            image_feature = self._forward_image_feature(image)
+            geometry_outputs = self._forward_geometry(
+                image,
+                image_feature,
+                use_grid_head=use_grid_head,
+                homography=homography,
+                warp_feature=use_grid_head or homography is not None,
+            )
 
         if not return_center:
             return geometry_outputs
@@ -130,32 +150,83 @@ class GridToBEVLayer(nn.Module):
         center_outputs = self.center_head(image_feature)
         image_center_logits = center_outputs["heatmap_logits"]
         image_center_offset = center_outputs["offset"]
-        bev_center_logits, _ = self._warp_to_bev(
-            image_center_logits,
-            geometry_outputs["homography"],
-        )
-        bev_center_offset, _ = self._warp_to_bev(
-            image_center_offset,
-            geometry_outputs["homography"],
-        )
-
-        return {
+        outputs = {
             **geometry_outputs,
             "center_feature": center_outputs["center_feature"],
             "image_center_logits": image_center_logits,
             "image_center_offset": image_center_offset,
-            "bev_center_logits": bev_center_logits,
-            "bev_center_offset": bev_center_offset,
         }
 
-    def _forward_geometry(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
-        _, _, img_h, img_w = image.shape
+        if warp_center:
+            if "homography" not in geometry_outputs:
+                raise ValueError("warp_center=True requires grid head output or a supplied homography.")
+            bev_center_logits, _ = self._warp_to_bev(
+                image_center_logits,
+                geometry_outputs["homography"],
+            )
+            bev_center_offset, _ = self._warp_to_bev(
+                image_center_offset,
+                geometry_outputs["homography"],
+            )
+            outputs.update(
+                {
+                    "bev_center_logits": bev_center_logits,
+                    "bev_center_offset": bev_center_offset,
+                }
+            )
 
+        return outputs
+
+    def _forward_image_feature(self, image: torch.Tensor) -> torch.Tensor:
         features = self.backbone(image)
         fpn_features = self.fpn(features)
-        image_feature = fpn_features[0]
-        grid_logits = self.grid_head(image_feature)
+        return fpn_features[0]
 
+    def _forward_geometry(
+        self,
+        image: torch.Tensor,
+        image_feature: torch.Tensor,
+        use_grid_head: bool,
+        homography: torch.Tensor | None,
+        warp_feature: bool,
+    ) -> dict[str, torch.Tensor]:
+        _, _, img_h, img_w = image.shape
+        _, _, feat_h, feat_w = image_feature.shape
+
+        outputs: dict[str, torch.Tensor] = {
+            "image_feature": image_feature,
+        }
+
+        if use_grid_head:
+            grid_outputs = self._forward_grid_head(image, image_feature)
+            outputs.update(grid_outputs)
+        elif homography is not None:
+            outputs["homography"] = self._prepare_homography(
+                homography,
+                batch_size=image.shape[0],
+                device=image_feature.device,
+                dtype=image_feature.dtype,
+            )
+
+        if warp_feature:
+            if "homography" not in outputs:
+                raise ValueError("warp_feature=True requires grid head output or a supplied homography.")
+            bev_feature, bev_valid_mask = self._warp_to_bev(
+                image_feature,
+                outputs["homography"],
+            )
+            outputs["bev_feature"] = bev_feature
+            outputs["bev_valid_mask"] = bev_valid_mask
+
+        return outputs
+
+    def _forward_grid_head(
+        self,
+        image: torch.Tensor,
+        image_feature: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        _, _, img_h, img_w = image.shape
+        grid_logits = self.grid_head(image_feature)
         grid_points_feature, grid_confidence = self._softargmax_points(grid_logits)
         _, _, feat_h, feat_w = image_feature.shape
 
@@ -180,12 +251,7 @@ class GridToBEVLayer(nn.Module):
             point_mask=homography_point_mask,
         )
 
-        bev_feature, bev_valid_mask = self._warp_to_bev(image_feature, homography)
-
         return {
-            "image_feature": image_feature,
-            "bev_feature": bev_feature,
-            "bev_valid_mask": bev_valid_mask,
             "grid_points": grid_points_image,
             "grid_confidence": grid_confidence,
             "grid_visible": grid_visible,
@@ -193,6 +259,34 @@ class GridToBEVLayer(nn.Module):
             "homography": homography,
             "grid_logits": grid_logits,
         }
+
+    @staticmethod
+    def _prepare_homography(
+        homography: torch.Tensor,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        homography = torch.as_tensor(homography, device=device, dtype=dtype)
+        if homography.dim() == 2:
+            if homography.shape != (3, 3):
+                raise ValueError(f"homography must have shape [3, 3], got {tuple(homography.shape)}")
+            homography = homography.unsqueeze(0).expand(batch_size, -1, -1)
+        elif homography.dim() == 3:
+            if homography.shape[1:] != (3, 3):
+                raise ValueError(
+                    f"homography must have shape [B, 3, 3], got {tuple(homography.shape)}"
+                )
+            if homography.shape[0] == 1 and batch_size != 1:
+                homography = homography.expand(batch_size, -1, -1)
+            elif homography.shape[0] != batch_size:
+                raise ValueError(
+                    f"homography batch size must be 1 or {batch_size}, got {homography.shape[0]}"
+                )
+        else:
+            raise ValueError(f"homography must have shape [3, 3] or [B, 3, 3], got {tuple(homography.shape)}")
+
+        return homography
 
     def _to_bchw(self, image: torch.Tensor) -> torch.Tensor:
         if image.dim() == 3:
