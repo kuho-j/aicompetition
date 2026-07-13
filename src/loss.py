@@ -94,6 +94,7 @@ def centernet_detection_loss(
         beta : float = 4.0,
         miss_weight : float = 1.0,
         false_positive_weight : float = 0.05,
+        empty_confidence_weight : float = 0.01,
         displacement_weight : float = 0.25,
         displacement_radius : int = 4,
         offset_weight : float = 1.0,
@@ -103,7 +104,8 @@ def centernet_detection_loss(
 
     Positive samples are only pixels whose target value is exactly 1.0. Negative
     loss is deliberately weak because missing annotations should not dominate
-    training.
+    training. A small empty-confidence term also suppresses confident detections
+    on pixels with no target response at all.
     '''
 
     gt = gt.to(device=logits.device, dtype=logits.dtype).clamp(0.0, 1.0)
@@ -130,12 +132,18 @@ def centernet_detection_loss(
             * torch.log((1.0 - pred).clamp(min=1e-12))
             * neg_mask
             )
+    empty_mask = gt.eq(0.0).to(dtype=logits.dtype)
+    empty_confidence_loss = pred.pow(2.0) * empty_mask
 
     num_pos = pos_mask.sum().clamp(min=1.0)
+    num_empty = empty_mask.sum().clamp(min=1.0)
     heatmap_loss = (
             miss_weight * miss_loss.sum()
             + false_positive_weight * false_positive_loss.sum()
             ) / num_pos
+    heatmap_loss = heatmap_loss + empty_confidence_weight * (
+            empty_confidence_loss.sum() / num_empty
+            )
 
     shift_loss = center_displacement_loss(
             logits,
@@ -169,6 +177,7 @@ class CenterNetDetectionLoss(nn.Module):
             self,
             miss_weight : float = 1.0,
             false_positive_weight : float = 0.05,
+            empty_confidence_weight : float = 0.01,
             displacement_weight : float = 0.25,
             displacement_radius : int = 4,
             offset_weight : float = 1.0,
@@ -176,6 +185,7 @@ class CenterNetDetectionLoss(nn.Module):
         super().__init__()
         self.miss_weight = miss_weight
         self.false_positive_weight = false_positive_weight
+        self.empty_confidence_weight = empty_confidence_weight
         self.displacement_weight = displacement_weight
         self.displacement_radius = displacement_radius
         self.offset_weight = offset_weight
@@ -196,6 +206,7 @@ class CenterNetDetectionLoss(nn.Module):
                 target_offset=target_offset,
                 miss_weight=self.miss_weight,
                 false_positive_weight=self.false_positive_weight,
+                empty_confidence_weight=self.empty_confidence_weight,
                 displacement_weight=self.displacement_weight,
                 displacement_radius=self.displacement_radius,
                 offset_weight=self.offset_weight,

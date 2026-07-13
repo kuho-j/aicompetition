@@ -20,7 +20,7 @@ LIGHTING_AUG_PROB = 1.0
 LIGHTING_AUG_MILD_END_EPOCH = 40
 LIGHTING_AUG_MILD_PERCENT_RANGE = (-10.0, 10.0)
 LIGHTING_AUG_STRONG_PERCENT_RANGE = (-20.0, 20.0)
-DEFAULT_AUGMENTATION_WARMUP_EPOCHS = 10
+DEFAULT_AUGMENTATION_WARMUP_EPOCHS = 20
 
 def get_rotation_aug_degree_range(
         epoch: int,
@@ -358,6 +358,7 @@ def train(
         center_threshold=0.05,
         loss_miss_weight=1.0,
         loss_false_positive_weight=0.05,
+        loss_empty_confidence_weight=0.01,
         loss_displacement_weight=0.25,
         loss_displacement_radius=4,
         loss_offset_weight=1.0,
@@ -385,6 +386,7 @@ def train(
     criterion = CenterNetDetectionLoss(
             miss_weight=loss_miss_weight,
             false_positive_weight=loss_false_positive_weight,
+            empty_confidence_weight=loss_empty_confidence_weight,
             displacement_weight=loss_displacement_weight,
             displacement_radius=loss_displacement_radius,
             offset_weight=loss_offset_weight,
@@ -455,6 +457,7 @@ def train_k_fold(
         center_threshold=0.05,
         loss_miss_weight=1.0,
         loss_false_positive_weight=0.05,
+        loss_empty_confidence_weight=0.01,
         loss_displacement_weight=0.25,
         loss_displacement_radius=4,
         loss_offset_weight=1.0,
@@ -482,6 +485,7 @@ def train_k_fold(
     criterion = CenterNetDetectionLoss(
             miss_weight=loss_miss_weight,
             false_positive_weight=loss_false_positive_weight,
+            empty_confidence_weight=loss_empty_confidence_weight,
             displacement_weight=loss_displacement_weight,
             displacement_radius=loss_displacement_radius,
             offset_weight=loss_offset_weight,
@@ -608,6 +612,12 @@ def parse_args():
             help='Small penalty for detections away from labeled centers.',
             )
     parser.add_argument(
+            '--loss-empty-confidence-weight',
+            type=float,
+            default=0.01,
+            help='Small penalty for confident detections on pixels with no target response.',
+            )
+    parser.add_argument(
             '--loss-displacement-weight',
             type=float,
             default=0.25,
@@ -726,6 +736,7 @@ def main(
         fold_interval=5,
         loss_miss_weight=1.0,
         loss_false_positive_weight=0.05,
+        loss_empty_confidence_weight=0.01,
         loss_displacement_weight=0.25,
         loss_displacement_radius=4,
         loss_offset_weight=1.0,
@@ -760,6 +771,7 @@ def main(
             fold_interval=fold_interval,
             loss_miss_weight=loss_miss_weight,
             loss_false_positive_weight=loss_false_positive_weight,
+            loss_empty_confidence_weight=loss_empty_confidence_weight,
             loss_displacement_weight=loss_displacement_weight,
             loss_displacement_radius=loss_displacement_radius,
             loss_offset_weight=loss_offset_weight,
@@ -783,6 +795,7 @@ if __name__ == '__main__':
             fold_interval=args.fold_interval,
             loss_miss_weight=args.loss_miss_weight,
             loss_false_positive_weight=args.loss_false_positive_weight,
+            loss_empty_confidence_weight=args.loss_empty_confidence_weight,
             loss_displacement_weight=args.loss_displacement_weight,
             loss_displacement_radius=args.loss_displacement_radius,
             loss_offset_weight=args.loss_offset_weight,
