@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.model.fpn_neck import FPNNeck
+from src.model.detection import CenterNetHead
 from src.model.yolov8_backbone import ConvBNSiLU, YOLOv8Backbone
 
 
@@ -41,6 +42,10 @@ class GridToBEVLayer(nn.Module):
         homography_point_mask: [B, N], points used for homography estimation
         homography: [B, 3, 3], mapping BEV normalized coords to feature normalized coords
         grid_logits: [B, N, feat_h, feat_w]
+        image_center_logits: [B, C_cls, feat_h, feat_w]
+        image_center_offset: [B, 2, feat_h, feat_w]
+        bev_center_logits: [B, C_cls, bev_h, bev_w]
+        bev_center_offset: [B, 2, bev_h, bev_w]
     """
 
     def __init__(
@@ -53,6 +58,8 @@ class GridToBEVLayer(nn.Module):
         bev_size: tuple[int, int] = (60, 80),
         bev_grid_points: torch.Tensor | None = None,
         visibility_threshold: float = 0.5,
+        num_classes: int = 60,
+        center_head_channels: int = 128,
     ):
         super().__init__()
         if num_grid_points < 4:
@@ -66,6 +73,12 @@ class GridToBEVLayer(nn.Module):
         self.backbone = YOLOv8Backbone(img_channels, backbone_width, backbone_depth)
         self.fpn = FPNNeck(self.backbone.out_channels, fpn_out_channels)
         self.grid_head = GridPointHead(fpn_out_channels, num_grid_points)
+        self.center_head = CenterNetHead(
+            fpn_out_channels,
+            num_classes=num_classes,
+            hidden_channels=center_head_channels,
+        )
+        self.freeze_geometry = False
 
         if bev_grid_points is None:
             bev_grid_points = self._default_bev_grid_points(num_grid_points)
@@ -76,12 +89,66 @@ class GridToBEVLayer(nn.Module):
             )
         self.register_buffer("bev_grid_points", bev_grid_points.float())
 
-    def forward(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
+    def set_geometry_trainable(self, trainable: bool) -> None:
+        self.freeze_geometry = not trainable
+        for module in (self.backbone, self.fpn, self.grid_head):
+            for param in module.parameters():
+                param.requires_grad = trainable
+            if not trainable:
+                module.eval()
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_geometry:
+            self.backbone.eval()
+            self.fpn.eval()
+            self.grid_head.eval()
+        return self
+
+    def forward(
+        self,
+        image: torch.Tensor,
+        return_center: bool = True,
+    ) -> dict[str, torch.Tensor]:
         """
         image:
             [H, W, C], [C, H, W], [B, H, W, C], or [B, C, H, W]
         """
         image = self._to_bchw(image)
+
+        if self.freeze_geometry:
+            with torch.no_grad():
+                geometry_outputs = self._forward_geometry(image)
+            image_feature = geometry_outputs["image_feature"].detach()
+        else:
+            geometry_outputs = self._forward_geometry(image)
+            image_feature = geometry_outputs["image_feature"]
+
+        if not return_center:
+            return geometry_outputs
+
+        center_outputs = self.center_head(image_feature)
+        image_center_logits = center_outputs["heatmap_logits"]
+        image_center_offset = center_outputs["offset"]
+        bev_center_logits, _ = self._warp_to_bev(
+            image_center_logits,
+            geometry_outputs["homography"],
+        )
+        bev_center_offset, _ = self._warp_to_bev(
+            image_center_offset,
+            geometry_outputs["homography"],
+        )
+
+        return {
+            **geometry_outputs,
+            "center_feature": center_outputs["center_feature"],
+            "image_center_logits": image_center_logits,
+            "image_center_offset": image_center_offset,
+            "bev_center_logits": bev_center_logits,
+            "bev_center_offset": bev_center_offset,
+        }
+
+    def _forward_geometry(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
         _, _, img_h, img_w = image.shape
 
         features = self.backbone(image)
@@ -116,6 +183,7 @@ class GridToBEVLayer(nn.Module):
         bev_feature, bev_valid_mask = self._warp_to_bev(image_feature, homography)
 
         return {
+            "image_feature": image_feature,
             "bev_feature": bev_feature,
             "bev_valid_mask": bev_valid_mask,
             "grid_points": grid_points_image,

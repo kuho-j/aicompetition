@@ -6,7 +6,7 @@ from sklearn.model_selection import KFold
 
 from src.aug import rotation_augmentation
 from src.dataset import ImageHeatmapDataset, collate_image_heatmap_fn
-from src.loss import shape_heatmap_loss
+from src.loss import CenterNetDetectionLoss
 from src.model.viewpoint_bev_detection import SingleViewBEVDetector
 
 ROTATION_AUG_PROB = 1.0
@@ -43,7 +43,11 @@ def load_checkpoint(model, optimizer, ckpt_path, device):
     checkpoint = torch.load(ckpt_path, map_location=device)
 
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
+        missing, unexpected = model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        if missing:
+            print(f'model missing keys: {missing}')
+        if unexpected:
+            print(f'model unexpected keys: {unexpected}')
 
         if 'optimizer_state_dict' in checkpoint:
             try:
@@ -56,7 +60,11 @@ def load_checkpoint(model, optimizer, ckpt_path, device):
 
         start_epoch = checkpoint.get('epoch', 0) + 1
     else:
-        model.load_state_dict(checkpoint)
+        missing, unexpected = model.load_state_dict(checkpoint, strict=False)
+        if missing:
+            print(f'model missing keys: {missing}')
+        if unexpected:
+            print(f'model unexpected keys: {unexpected}')
         start_epoch = 1
 
     print(f'loaded checkpoint: {ckpt_path} (resume from epoch {start_epoch})')
@@ -79,7 +87,7 @@ def _checkpoint_state_dict(checkpoint):
         return checkpoint['model_state_dict']
     return checkpoint
 
-def load_bev_layer_checkpoint(model, ckpt_path, device, strict=True):
+def load_bev_layer_checkpoint(model, ckpt_path, device, strict=False):
     if not os.path.isfile(ckpt_path):
         raise FileNotFoundError(f'BEV layer checkpoint not found: {ckpt_path}')
 
@@ -115,6 +123,7 @@ def set_bev_layer_trainable(model, trainable):
 def train_one_epoch(
         model,
         loader,
+        criterion,
         optimizer,
         device,
         epoch,
@@ -126,9 +135,11 @@ def train_one_epoch(
     if len(loader) == 0:
         raise ValueError('train loader is empty')
 
-    for images, gt_heatmap in loader:
+    for images, gt_heatmap, center_mask, center_offset in loader:
         images = images.to(device)
         gt_heatmap = gt_heatmap.to(device)
+        center_mask = center_mask.to(device)
+        center_offset = center_offset.to(device)
         if epoch > augmentation_warmup_epochs:
             images = rotation_augmentation(
                     images,
@@ -140,7 +151,13 @@ def train_one_epoch(
         outputs = model(images, return_aux=True)
 
         # loss
-        loss = shape_heatmap_loss(outputs["heatmap_logits"], gt_heatmap)
+        loss = criterion(
+                outputs["heatmap_logits"],
+                gt_heatmap,
+                center_mask,
+                outputs["offset"],
+                center_offset,
+                )
 
         # backward
         optimizer.zero_grad()
@@ -155,6 +172,7 @@ def train_one_epoch(
 def evaluate_loss(
         model,
         loader,
+        criterion,
         device,
         ):
     model.eval()
@@ -163,12 +181,20 @@ def evaluate_loss(
     if len(loader) == 0:
         raise ValueError('eval loader is empty')
 
-    for images, gt_heatmap in loader:
+    for images, gt_heatmap, center_mask, center_offset in loader:
         images = images.to(device)
         gt_heatmap = gt_heatmap.to(device)
+        center_mask = center_mask.to(device)
+        center_offset = center_offset.to(device)
 
         outputs = model(images, return_aux=True)
-        loss = shape_heatmap_loss(outputs["heatmap_logits"], gt_heatmap)
+        loss = criterion(
+                outputs["heatmap_logits"],
+                gt_heatmap,
+                center_mask,
+                outputs["offset"],
+                center_offset,
+                )
         total_loss += loss.item()
 
     return total_loss / len(loader)
@@ -270,6 +296,11 @@ def train(
         topk=100,
         score_threshold=0.3,
         center_threshold=0.05,
+        loss_miss_weight=1.0,
+        loss_false_positive_weight=0.05,
+        loss_displacement_weight=0.25,
+        loss_displacement_radius=4,
+        loss_offset_weight=1.0,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     if test_interval < 1:
@@ -288,6 +319,13 @@ def train(
 
     set_bev_layer_trainable(model, train_bev_layer)
     optimizer = make_optimizer(model, lr)
+    criterion = CenterNetDetectionLoss(
+            miss_weight=loss_miss_weight,
+            false_positive_weight=loss_false_positive_weight,
+            displacement_weight=loss_displacement_weight,
+            displacement_radius=loss_displacement_radius,
+            offset_weight=loss_offset_weight,
+            )
 
     if resume_path is not None:
         start_epoch = load_checkpoint(model, optimizer, resume_path, device)
@@ -310,6 +348,7 @@ def train(
         loss = train_one_epoch(
                 model,
                 train_loader,
+                criterion,
                 optimizer,
                 device,
                 epoch=epoch,
@@ -323,6 +362,7 @@ def train(
             val_loss = evaluate_loss(
                     model=model,
                     loader=test_loader,
+                    criterion=criterion,
                     device=device,
                     )
             print(
@@ -349,6 +389,11 @@ def train_k_fold(
         topk=100,
         score_threshold=0.3,
         center_threshold=0.05,
+        loss_miss_weight=1.0,
+        loss_false_positive_weight=0.05,
+        loss_displacement_weight=0.25,
+        loss_displacement_radius=4,
+        loss_offset_weight=1.0,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     if fold_interval < 1:
@@ -367,6 +412,13 @@ def train_k_fold(
 
     set_bev_layer_trainable(model, train_bev_layer)
     optimizer = make_optimizer(model, lr)
+    criterion = CenterNetDetectionLoss(
+            miss_weight=loss_miss_weight,
+            false_positive_weight=loss_false_positive_weight,
+            displacement_weight=loss_displacement_weight,
+            displacement_radius=loss_displacement_radius,
+            offset_weight=loss_offset_weight,
+            )
 
     if resume_path is not None:
         start_epoch = load_checkpoint(model, optimizer, resume_path, device)
@@ -400,6 +452,7 @@ def train_k_fold(
         loss = train_one_epoch(
                 model,
                 train_loader,
+                criterion,
                 optimizer,
                 device,
                 epoch=epoch,
@@ -413,6 +466,7 @@ def train_k_fold(
             val_loss = evaluate_loss(
                     model=model,
                     loader=val_loader,
+                    criterion=criterion,
                     device=device,
                     )
             print(
@@ -441,7 +495,7 @@ def parse_args():
     parser.add_argument(
             '--train-bev-layer',
             action='store_true',
-            help='Also train the BEV layer. By default only the decoder is trained.',
+            help='Also train the geometry/backbone part. By default only the CenterNet head is trained.',
             )
     parser.add_argument(
             '--num-grid-points',
@@ -465,7 +519,43 @@ def parse_args():
             '--decoder-channels',
             type=int,
             default=64,
-            help='Hidden channel width of the BEV heatmap decoder.',
+            help='Deprecated compatibility option; BEV U-Net decoder has been removed.',
+            )
+    parser.add_argument(
+            '--center-head-channels',
+            type=int,
+            default=128,
+            help='Hidden channel width of the image-space CenterNet head.',
+            )
+    parser.add_argument(
+            '--loss-miss-weight',
+            type=float,
+            default=1.0,
+            help='Weight for labeled center pixels that are not detected.',
+            )
+    parser.add_argument(
+            '--loss-false-positive-weight',
+            type=float,
+            default=0.05,
+            help='Small penalty for detections away from labeled centers.',
+            )
+    parser.add_argument(
+            '--loss-displacement-weight',
+            type=float,
+            default=0.25,
+            help='Weight for local center displacement around labeled centers.',
+            )
+    parser.add_argument(
+            '--loss-displacement-radius',
+            type=int,
+            default=4,
+            help='Local radius in heatmap cells for center displacement loss.',
+            )
+    parser.add_argument(
+            '--loss-offset-weight',
+            type=float,
+            default=1.0,
+            help='Weight for CenterNet local offset L1 loss.',
             )
     parser.add_argument(
             '--k-folds',
@@ -519,8 +609,14 @@ def main(
         bev_height=60,
         bev_width=80,
         decoder_channels=64,
+        center_head_channels=128,
         k_folds=5,
         fold_interval=5,
+        loss_miss_weight=1.0,
+        loss_false_positive_weight=0.05,
+        loss_displacement_weight=0.25,
+        loss_displacement_radius=4,
+        loss_offset_weight=1.0,
         augmentation_warmup_epochs=DEFAULT_AUGMENTATION_WARMUP_EPOCHS,
         ):
     data_list = make_data_list()
@@ -536,6 +632,7 @@ def main(
             heatmap_size=(60, 80),
             num_grid_points=num_grid_points,
             decoder_channels=decoder_channels,
+            center_head_channels=center_head_channels,
             ).to(device)
 
     train_k_fold(
@@ -548,6 +645,11 @@ def main(
             epochs=epochs,
             n_splits=k_folds,
             fold_interval=fold_interval,
+            loss_miss_weight=loss_miss_weight,
+            loss_false_positive_weight=loss_false_positive_weight,
+            loss_displacement_weight=loss_displacement_weight,
+            loss_displacement_radius=loss_displacement_radius,
+            loss_offset_weight=loss_offset_weight,
             augmentation_warmup_epochs=augmentation_warmup_epochs,
             )
 
@@ -562,8 +664,13 @@ if __name__ == '__main__':
             bev_height=args.bev_height,
             bev_width=args.bev_width,
             decoder_channels=args.decoder_channels,
+            center_head_channels=args.center_head_channels,
             k_folds=args.k_folds,
             fold_interval=args.fold_interval,
+            loss_miss_weight=args.loss_miss_weight,
+            loss_false_positive_weight=args.loss_false_positive_weight,
+            loss_displacement_weight=args.loss_displacement_weight,
+            loss_displacement_radius=args.loss_displacement_radius,
+            loss_offset_weight=args.loss_offset_weight,
             augmentation_warmup_epochs=args.augmentation_warmup_epochs,
             )
-

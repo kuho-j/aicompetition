@@ -5,6 +5,7 @@ import torch.nn.functional as F
 @torch.no_grad()
 def decode_predictions(
         heatmap : torch.Tensor,
+        offset : torch.Tensor | None = None,
         topk : int = 100,
         score_threshold : float = 0.3,
         ) -> list[dict[str, torch.Tensor]]:
@@ -18,6 +19,12 @@ def decode_predictions(
     '''
 
     B, C, H, W = heatmap.shape
+    if offset is not None:
+        offset = offset.to(device=heatmap.device, dtype=heatmap.dtype)
+        if offset.shape != (B, 2, H, W):
+            raise ValueError(
+                f"offset must have shape {(B, 2, H, W)}, got {tuple(offset.shape)}"
+            )
     results = []
 
     # Heatmap NMS
@@ -50,6 +57,11 @@ def decode_predictions(
         spatial_idx = topk_idx % (H * W)
         ys = (spatial_idx // W).float()
         xs = (spatial_idx % W).float()
+        if offset is not None:
+            offset_x = offset[b, 0].flatten()[spatial_idx]
+            offset_y = offset[b, 1].flatten()[spatial_idx]
+            xs = xs + offset_x
+            ys = ys + offset_y
 
         # normalize
         centers = torch.stack([xs / W, ys / H], dim=1)

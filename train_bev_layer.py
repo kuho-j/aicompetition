@@ -392,7 +392,7 @@ def train_one_epoch(
                 dtype=batch["grid_visible"].dtype,
             )
 
-        outputs = model(batch["image"])
+        outputs = model(batch["image"], return_center=False)
         loss, logs = criterion(outputs, batch, model.bev_grid_points)
 
         optimizer.zero_grad(set_to_none=True)
@@ -438,9 +438,17 @@ def load_checkpoint(
     device: torch.device,
 ) -> int:
     checkpoint = torch.load(path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    missing, unexpected = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    if missing:
+        print(f"model missing keys: {missing}")
+    if unexpected:
+        print(f"model unexpected keys: {unexpected}")
     if "optimizer_state_dict" in checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        try:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        except ValueError as exc:
+            print(f"optimizer state is incompatible with current parameter groups: {exc}")
+            print("continuing with a freshly initialized optimizer")
     return int(checkpoint.get("epoch", 0)) + 1
 
 

@@ -55,7 +55,13 @@ def parse_arg():
         '--decoder-channels',
         type=int,
         default=64,
-        help='Hidden channel width of the BEV heatmap decoder.'
+        help='Deprecated compatibility option; BEV U-Net decoder has been removed.'
+    )
+    parser.add_argument(
+        '--center-head-channels',
+        type=int,
+        default=128,
+        help='Hidden channel width of the image-space CenterNet head.'
     )
     parser.add_argument(
         '--cam1',
@@ -98,9 +104,13 @@ def load_model(
     
     if isinstance(loaded, dict):
         if 'model_state_dict' in loaded:
-            model.load_state_dict(loaded['model_state_dict'])
+            missing, unexpected = model.load_state_dict(loaded['model_state_dict'], strict=False)
         else:
-            model.load_state_dict(loaded)
+            missing, unexpected = model.load_state_dict(loaded, strict=False)
+        if missing:
+            print(f'model missing keys: {missing}')
+        if unexpected:
+            print(f'model unexpected keys: {unexpected}')
     else:
         raise TypeError(f'unsupported file format: {loaded.type()} in {path}')
     
@@ -189,12 +199,14 @@ def main(
     bev_height : int = 60,
     bev_width : int = 80,
     decoder_channels : int = 64,
+    center_head_channels : int = 128,
     ):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = SingleViewBEVDetector(
         bev_size=(bev_height, bev_width),
         decoder_channels=decoder_channels,
+        center_head_channels=center_head_channels,
     ).to(device)
     load_model(model, model_path, device)
     model.eval()
@@ -288,4 +300,5 @@ if __name__ == '__main__':
         bev_height=args.bev_height,
         bev_width=args.bev_width,
         decoder_channels=args.decoder_channels,
+        center_head_channels=args.center_head_channels,
     )

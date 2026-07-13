@@ -6,6 +6,33 @@ from PIL import Image
 import numpy as np
 from src.render_gt_heatmap import render_gaussian_heatmap
 
+
+def render_center_offset(
+    centers: torch.Tensor,
+    classes: torch.Tensor,
+    num_classes: int,
+    output_h: int,
+    output_w: int,
+) -> torch.Tensor:
+    offset = torch.zeros(2, output_h, output_w)
+
+    for cx, cy in centers:
+        px = cx.item() * output_w
+        py = cy.item() * output_h
+        ix, iy = int(px), int(py)
+
+        if not (0 <= ix < output_w and 0 <= iy < output_h):
+            continue
+
+        offset[0, iy, ix] = px - ix
+        offset[1, iy, ix] = py - iy
+
+    return offset
+
+
+def zero_center_offset_from_heatmap(heatmap: torch.Tensor) -> torch.Tensor:
+    return heatmap.new_zeros(2, heatmap.shape[-2], heatmap.shape[-1])
+
 class MultiViewDataset(Dataset):
     '''
     input:
@@ -53,9 +80,18 @@ class MultiViewDataset(Dataset):
                 self.output_w,
                 sigma=1.5,
                 )
+        center_offset = render_center_offset(
+                centers,
+                classes,
+                self.num_classes,
+                self.output_h,
+                self.output_w,
+                )
         return {
             'images' : images,
-            'heatmap' : heatmap
+            'heatmap' : heatmap,
+            'center_mask' : heatmap.eq(1.0).float(),
+            'center_offset' : center_offset,
         }
 
 def collate_fn(batch):
@@ -65,8 +101,10 @@ def collate_fn(batch):
 
     imgs = torch.stack([b['images'] for b in batch])
     hms = torch.stack([b['heatmap'] for b in batch])
+    center_masks = torch.stack([b['center_mask'] for b in batch])
+    center_offsets = torch.stack([b['center_offset'] for b in batch])
 
-    return imgs, hms
+    return imgs, hms, center_masks, center_offsets
 
 
 class SingleViewDataset(Dataset):
@@ -122,9 +160,18 @@ class SingleViewDataset(Dataset):
             self.output_w,
             sigma=1.5,
         )
+        center_offset = render_center_offset(
+            centers,
+            classes,
+            self.num_classes,
+            self.output_h,
+            self.output_w,
+        )
         return {
             "image": image,
             "heatmap": heatmap,
+            "center_mask": heatmap.eq(1.0).float(),
+            "center_offset": center_offset,
         }
 
 
@@ -135,8 +182,10 @@ def collate_single_view_fn(batch):
 
     imgs = torch.stack([b["image"] for b in batch])
     hms = torch.stack([b["heatmap"] for b in batch])
+    center_masks = torch.stack([b["center_mask"] for b in batch])
+    center_offsets = torch.stack([b["center_offset"] for b in batch])
 
-    return imgs, hms
+    return imgs, hms, center_masks, center_offsets
 
 
 class ImageHeatmapDataset(Dataset):
@@ -183,6 +232,8 @@ class ImageHeatmapDataset(Dataset):
         return {
             "image": image,
             "heatmap": heatmap,
+            "center_mask": heatmap.eq(1.0).float(),
+            "center_offset": zero_center_offset_from_heatmap(heatmap),
         }
 
     @staticmethod
@@ -256,8 +307,10 @@ def collate_image_heatmap_fn(batch):
 
     imgs = torch.stack([b["image"] for b in batch])
     hms = torch.stack([b["heatmap"] for b in batch])
+    center_masks = torch.stack([b["center_mask"] for b in batch])
+    center_offsets = torch.stack([b["center_offset"] for b in batch])
 
-    return imgs, hms
+    return imgs, hms, center_masks, center_offsets
 
 
 class GridBEVDataset(Dataset):

@@ -104,7 +104,11 @@ def make_data_list(filename_path: str, expected_num_views: int = 5):
 def load_model_weights(model: torch.nn.Module, checkpoint_path: str, device: torch.device):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
-    model.load_state_dict(state_dict)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        print(f"model missing keys: {missing}")
+    if unexpected:
+        print(f"model unexpected keys: {unexpected}")
     print(f"loaded checkpoint: {checkpoint_path}")
 
 
@@ -180,13 +184,16 @@ def evaluate(
         if device.type == "cuda":
             torch.cuda.synchronize()
         start = time.perf_counter()
-        pred_heatmap = model(images, viewpoint=viewpoint)
+        outputs = model(images, viewpoint=viewpoint, return_aux=True)
+        pred_heatmap = outputs["heatmap"]
+        pred_offset = outputs["offset"]
         if device.type == "cuda":
             torch.cuda.synchronize()
         elapsed += time.perf_counter() - start
 
         decoded = decode_predictions(
             pred_heatmap,
+            offset=pred_offset,
             topk=topk,
             score_threshold=score_threshold,
         )
@@ -222,6 +229,7 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--num-views", type=int, default=5)
     parser.add_argument("--num-classes", type=int, default=60)
+    parser.add_argument("--center-head-channels", type=int, default=128)
     parser.add_argument("--topk", type=int, default=100)
     parser.add_argument("--score-threshold", type=float, default=0.3)
     parser.add_argument(
@@ -243,6 +251,7 @@ def test(
     num_workers: int = 0,
     num_views: int = 5,
     num_classes: int = 60,
+    center_head_channels: int = 128,
     topk: int = 100,
     score_threshold: float = 0.3,
     center_threshold: float = 0.05,
@@ -257,6 +266,7 @@ def test(
             num_workers=args.num_workers,
             num_views=args.num_views,
             num_classes=args.num_classes,
+            center_head_channels=args.center_head_channels,
             topk=args.topk,
             score_threshold=args.score_threshold,
             center_threshold=args.center_threshold,
@@ -288,6 +298,7 @@ def test(
             backbone_width=0.25,
             backbone_depth=0.33,
             heatmap_size=(60, 80),
+            center_head_channels=center_head_channels,
         ).to(device)
 
     if weights is not None:

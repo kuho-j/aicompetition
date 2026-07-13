@@ -96,7 +96,7 @@ class MultiViewDetector(nn.Module):
         fpn_out = self.fpn(fused_feats)
         
         # detect ... P3
-        return self.head(fpn_out[0])
+        return self.head(fpn_out[0])["heatmap_logits"].sigmoid()
 
 
 
