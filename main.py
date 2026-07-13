@@ -11,6 +11,36 @@ from src.model.viewpoint_bev_detection import SingleViewBEVDetector
 from src.predict import decode_predictions
 
 
+def foo(*model_results):
+    '''
+    input : 5 model result dictionaries, each containing class/classes, centers, confidence/scores
+    output : {class_id: count}
+    '''
+
+    if len(model_results) == 1 and isinstance(model_results[0], (list, tuple)):
+        model_results = tuple(model_results[0])
+
+    output = {}
+    for result in model_results:
+        if result is None:
+            continue
+
+        classes = result.get('class', result.get('classes'))
+        if classes is None:
+            continue
+
+        if torch.is_tensor(classes):
+            classes = classes.detach().cpu().reshape(-1).tolist()
+        elif np.isscalar(classes):
+            classes = [classes]
+
+        for class_id in classes:
+            class_id = int(class_id)
+            output[class_id] = output.get(class_id, 0) + 1
+
+    return output
+
+
 names = [
     'aunt_jemima_original_syrup', 'band_aid_clear_strips', 'bumblebee_albacore', 'cholula_chipotle_hot_sauce', 'crayola_24_crayons', 'hersheys_cocoa',
     'honey_bunches_of_oats_honey_rasted', 'honey_bunches_of_oats_with_almonds', 'hunts_sauce', 'listerine_green', 'mahatma_rice', 'white_rain_body_wash', 'pringles_bbq',
@@ -176,16 +206,19 @@ def evaluate(
 
     outputs = model(img.to(device), viewpoint=viewpoint, return_aux=True, decode=False)
     pred_heatmap = outputs["heatmap"]
-    pred_heatmap = pred_heatmap.amax(dim=0, keepdim=True)
     decoded = decode_predictions(
         pred_heatmap,
         topk=topk,
         score_threshold=score_threshold,
     )
 
+    class_counts = foo(decoded[:5])
+    item_counts = np.zeros(num_classes, dtype=int)
+    for class_id, count in class_counts.items():
+        if 0 <= class_id < num_classes:
+            item_counts[class_id] = count
 
-    classes = decoded[0]['classes'].numpy()
-    return np.bincount(classes, minlength=num_classes)[:num_classes]
+    return item_counts
 
 
 

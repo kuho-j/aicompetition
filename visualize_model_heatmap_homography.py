@@ -56,9 +56,13 @@ def parse_args():
     )
     parser.add_argument(
         "--homography-source",
-        choices=("model", "file"),
-        default="model",
-        help="Use the model-predicted homography or a matrix loaded from --homography-path.",
+        choices=("none", "model", "file"),
+        default="none",
+        help=(
+            "Optional warp source. Use 'none' for raw prediction diagnostics, "
+            "'model' for the model-predicted homography, or 'file' for a matrix "
+            "loaded from --homography-path."
+        ),
     )
     parser.add_argument("--num-classes", type=int, default=60)
     parser.add_argument("--num-grid-points", type=int, default=9)
@@ -153,8 +157,8 @@ def read_image(path: str) -> np.ndarray:
     return image
 
 
-def load_image_paths_from_file(filepath: str) -> list[str]:
-    image_paths = []
+def load_image_entries_from_file(filepath: str) -> list[tuple[str, str | None]]:
+    image_entries = []
     with open(filepath, "r") as file:
         for line_num, line in enumerate(file, start=1):
             parts = line.strip().split()
@@ -162,17 +166,48 @@ def load_image_paths_from_file(filepath: str) -> list[str]:
                 continue
             if len(parts) < 1:
                 raise ValueError(f"{filepath}:{line_num} does not contain an image path")
-            image_paths.append(parts[0])
+            image_entries.append((parts[0], parts[1] if len(parts) > 1 else None))
 
-    if len(image_paths) == 0:
+    if len(image_entries) == 0:
         raise ValueError(f"no image paths found in {filepath}")
 
-    existing_paths = [path for path in image_paths if os.path.exists(path)]
-    if len(existing_paths) > 0:
-        return existing_paths
+    existing_entries = [entry for entry in image_entries if os.path.exists(entry[0])]
+    if len(existing_entries) > 0:
+        return existing_entries
 
     print(f"warning: no paths in {filepath} exist on this machine; selecting from all listed paths")
-    return image_paths
+    return image_entries
+
+
+def load_gt_heatmap(path: str | None, output_shape: tuple[int, int]) -> np.ndarray | None:
+    if path is None or not os.path.exists(path):
+        return None
+
+    with np.load(path) as npz:
+        if "heatmap" in npz:
+            heatmap = npz["heatmap"]
+        elif "heatmaps" in npz:
+            heatmap = npz["heatmaps"]
+        elif "arr_0" in npz:
+            heatmap = npz["arr_0"]
+        elif len(npz.files) == 1:
+            heatmap = npz[npz.files[0]]
+        else:
+            raise ValueError(f"heatmap npz must contain one heatmap array, got keys {npz.files}")
+
+    heatmap = np.asarray(heatmap, dtype=np.float32)
+    if heatmap.ndim == 4 and heatmap.shape[0] == 1:
+        heatmap = heatmap[0]
+    if heatmap.ndim != 3:
+        raise ValueError(f"GT heatmap must have shape [C, H, W] or [H, W, C], got {heatmap.shape}")
+    if heatmap.shape[0] != 60 and heatmap.shape[-1] == 60:
+        heatmap = np.transpose(heatmap, (2, 0, 1))
+
+    merged = heatmap.max(axis=0)
+    output_h, output_w = output_shape
+    if merged.shape != (output_h, output_w):
+        merged = cv2.resize(merged, (output_w, output_h), interpolation=cv2.INTER_AREA)
+    return merged
 
 
 def infer_view_index(image_path: str) -> int:
@@ -182,17 +217,20 @@ def infer_view_index(image_path: str) -> int:
     return int(match.group(1)) - 1
 
 
-def choose_random_image(args) -> tuple[str, int]:
+def choose_random_image(args) -> tuple[str, str | None, int]:
     rng = random.Random(args.seed)
-    candidates = args.images if args.images is not None else load_image_paths_from_file(args.filepath)
+    if args.images is not None:
+        candidates = [(path, None) for path in args.images]
+    else:
+        candidates = load_image_entries_from_file(args.filepath)
     if len(candidates) == 0:
         raise ValueError("no image candidates were provided")
 
-    selected_path = rng.choice(candidates)
+    selected_path, selected_heatmap_path = rng.choice(candidates)
     selected_view_index = infer_view_index(selected_path) if args.view_index is None else args.view_index
     if selected_view_index < 0 or selected_view_index > 4:
         raise ValueError(f"view index must be between 0 and 4, got {selected_view_index}")
-    return selected_path, selected_view_index
+    return selected_path, selected_heatmap_path, selected_view_index
 
 
 def load_homography(path: str, key: str | int | None, view_index: int) -> np.ndarray:
@@ -349,7 +387,7 @@ def select_class_indices(
 def main():
     args = parse_args()
     require_cv2()
-    selected_image_path, selected_view_index = choose_random_image(args)
+    selected_image_path, selected_heatmap_path, selected_view_index = choose_random_image(args)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SingleViewBEVDetector(
@@ -391,7 +429,13 @@ def main():
     heatmap_h, heatmap_w = view_heatmap.shape[-2:]
     merged_heatmap = view_heatmap.amax(dim=0).numpy()
 
+    gt_merged_heatmap = load_gt_heatmap(
+        selected_heatmap_path,
+        output_shape=(heatmap_h, heatmap_w),
+    )
+
     warped_view_heatmap = None
+    warped_merged_heatmap = None
     if args.homography_source == "model":
         if args.disable_grid_head:
             raise ValueError("--homography-source=model cannot be used with --disable-grid-head")
@@ -399,7 +443,7 @@ def main():
             raise RuntimeError("model did not return bev_center_logits")
         warped_view_heatmap = outputs["bev_center_logits"][0].sigmoid().detach().cpu()
         warped_merged_heatmap = warped_view_heatmap.amax(dim=0).numpy()
-    else:
+    elif args.homography_source == "file":
         homography = load_homography(
             args.homography_path,
             args.homography_key,
@@ -421,15 +465,27 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     image_bgr = images_bgr[0]
-    overview = make_grid(
-        [
-            add_label(image_bgr, f"random input view {selected_view_index}: {Path(selected_image_path).name}"),
-            add_label(overlay_heatmap(image_bgr, merged_heatmap), "pred heatmap overlay"),
-            add_label(colorize_heatmap(merged_heatmap, output_size=(image_bgr.shape[1], image_bgr.shape[0])), "pred heatmap"),
-            add_label(colorize_heatmap(warped_merged_heatmap, output_size=(image_bgr.shape[1], image_bgr.shape[0])), "homography warped heatmap"),
-        ],
-        columns=2,
-    )
+    overview_panels = [
+        add_label(image_bgr, f"random input view {selected_view_index}: {Path(selected_image_path).name}"),
+        add_label(overlay_heatmap(image_bgr, merged_heatmap), "pred heatmap overlay"),
+        add_label(colorize_heatmap(merged_heatmap, output_size=(image_bgr.shape[1], image_bgr.shape[0])), "pred heatmap"),
+    ]
+    if gt_merged_heatmap is not None:
+        overview_panels.append(
+            add_label(
+                colorize_heatmap(gt_merged_heatmap, output_size=(image_bgr.shape[1], image_bgr.shape[0])),
+                "gt heatmap",
+            )
+        )
+    if warped_merged_heatmap is not None:
+        overview_panels.append(
+            add_label(
+                colorize_heatmap(warped_merged_heatmap, output_size=(image_bgr.shape[1], image_bgr.shape[0])),
+                f"{args.homography_source} homography warped heatmap",
+            )
+        )
+
+    overview = make_grid(overview_panels, columns=2)
     overview_path = out_dir / "overview.png"
     cv2.imwrite(str(overview_path), overview)
 
@@ -437,28 +493,32 @@ def main():
     selected_classes = select_class_indices(view_heatmap, decoded, args.top_classes)
     for cls in selected_classes:
         class_heatmap = view_heatmap[cls].numpy()
-        if warped_view_heatmap is None:
+        label = f"class_{cls}"
+        class_panels.append(
+            add_label(
+                colorize_heatmap(class_heatmap, output_size=(image_bgr.shape[1], image_bgr.shape[0])),
+                f"{cls}: {label}",
+            )
+        )
+
+        warped_class_heatmap = None
+        if warped_view_heatmap is None and args.homography_source == "file":
             warped_class_heatmap = cv2.warpPerspective(
                 class_heatmap,
                 scaled_homography,
                 (heatmap_w, heatmap_h),
                 flags=cv2.INTER_LINEAR,
             )
-        else:
+        elif warped_view_heatmap is not None:
             warped_class_heatmap = warped_view_heatmap[cls].numpy()
-        label = f"class_{cls}"
-        class_panels.extend(
-            [
-                add_label(
-                    colorize_heatmap(class_heatmap, output_size=(image_bgr.shape[1], image_bgr.shape[0])),
-                    f"{cls}: {label}",
-                ),
+
+        if warped_class_heatmap is not None:
+            class_panels.append(
                 add_label(
                     colorize_heatmap(warped_class_heatmap, output_size=(image_bgr.shape[1], image_bgr.shape[0])),
                     f"warped {cls}: {label}",
                 ),
-            ]
-        )
+            )
 
     class_grid_path = None
     if class_panels:
@@ -470,6 +530,8 @@ def main():
     if class_grid_path is not None:
         print(f"saved detected class heatmaps: {class_grid_path}")
     print(f"selected image: {selected_image_path}")
+    if selected_heatmap_path is not None:
+        print(f"selected heatmap: {selected_heatmap_path}")
     print(f"selected view index: {selected_view_index}")
     print(f"selected classes: {selected_classes}")
     print(f"detections above threshold: {decoded['scores'].numel()}")
