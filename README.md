@@ -12,6 +12,11 @@
 uv sync
 ```
 
+# 사용 모델
+본 프로젝트는 Darknet/YOLOv7을 사용하지 않고, YOLOv8 기반 backbone과 CenterNet 기반 head를 사용하는 `SingleViewBEVDetector`를 사용합니다.
+
+추론은 별도의 실행 스크립트 없이 `main.py`로 수행합니다.
+
 # 프로젝트 실행 방법
 `main.py`를 실행시키면 task를 수행합니다.
 `main.py`는 다음 6가지 인자를 입력해야 합니다.
@@ -26,7 +31,7 @@ uv sync
 | --cam5 | 다섯 번째 비디오 파일의 경로입니다. |
 
 ```bash
-uv run python --weights path/to/model.pt --cam1 ... --cam2 ... --cam3 ... --cam4 ... --cam5 ...
+uv run python main.py --weights path/to/model.pt --cam1 ... --cam2 ... --cam3 ... --cam4 ... --cam5 ...
 ```
 
 결과는 현재 디렉토리의 `result.csv`에 저장됩니다.
