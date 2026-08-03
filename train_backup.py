@@ -21,9 +21,12 @@ LIGHTING_AUG_PROB = 1.0
 LIGHTING_AUG_MILD_END_EPOCH = 40
 LIGHTING_AUG_MILD_PERCENT_RANGE = (-10.0, 10.0)
 LIGHTING_AUG_STRONG_PERCENT_RANGE = (-20.0, 20.0)
+<<<<<<< Updated upstream
 DEFAULT_AUGMENTATION_WARMUP_EPOCHS = 20
-DEFAULT_NUKKI_FILEPATHS = '/home/aicompetition43/Dataset/output_gt/train_list.txt'
+DEFAULT_NUKKI_FILEPATHS = os.path.join('data', 'filepaths_nukki.txt')
+=======
 DEFAULT_AUGMENTATION_WARMUP_EPOCHS = 15
+>>>>>>> Stashed changes
 
 def get_rotation_aug_degree_range(
         epoch: int,
@@ -399,14 +402,14 @@ def run_interval_test(
 def train(
         model,
         data_list,
-        device, 
+        device,
         resume_path=None,
         bev_weights=None,
         train_bev_layer=False,
         epochs=50,
         lr=1e-3,
         test_data_list=None,
-        test_interval=1,
+        test_interval=5,
         batch_size=32,
         num_workers=0,
         num_classes=60,
@@ -519,7 +522,7 @@ def train_k_fold(
         epochs=50,
         lr=1e-4,
         n_splits=5,
-        fold_interval=1,
+        fold_interval=5,
         batch_size=32,
         num_workers=0,
         num_classes=60,
@@ -862,7 +865,7 @@ def make_data_list(filepath='data/filepaths_img_and_ht.txt', validate_heatmaps=T
             print(f'  {filepath}:{line_num}: {heatmap_path} ({type(exc).__name__}: {exc})')
 
     return data_list
- 
+
 def make_optional_data_list(filepath, validate_heatmaps=True):
     if filepath is None:
         return []
@@ -885,7 +888,7 @@ def main(
         use_k_fold=True,
         test_size=0.2,
         split_random_state=42,
-        fold_interval=1,
+        fold_interval=5,
         loss_miss_weight=1.0,
         loss_false_positive_weight=0.05,
         loss_empty_confidence_weight=0.01,

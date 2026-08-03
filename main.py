@@ -202,7 +202,7 @@ def evaluate(
             item_counts[class_id] = count
 
     return item_counts
-
+ 
 
 
 def main(
@@ -224,6 +224,7 @@ def main(
         bev_size=(bev_height, bev_width),
         decoder_channels=decoder_channels,
         center_head_channels=center_head_channels,
+        num_grid_points=9,
     ).to(device)
     load_model(model, model_path, device)
     model.eval()
